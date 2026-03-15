@@ -30,7 +30,7 @@ struct DependencyStatus {
 }
 
 /// Shared state: holds the running Python child process so cancel can kill it immediately.
-struct TranscribeProcess(Mutex<Option<Child>>);
+struct TranscribeProcess(Arc<Mutex<Option<Child>>>);
 
 #[tauri::command]
 fn check_dependencies(app: tauri::AppHandle) -> DependencyStatus {
@@ -152,18 +152,15 @@ async fn transcribe_video(
     threads: u32,
     process_state: tauri::State<'_, TranscribeProcess>,
 ) -> Result<String, String> {
-    let process_holder = Arc::new(Mutex::new(None::<Child>));
-    // Store the Arc in managed state so cancel_transcription can access it
     {
         let mut guard = process_state.0.lock().unwrap();
-        *guard = None; // clear any previous
+        *guard = None;
     }
 
-    let holder = process_holder.clone();
-    let ps = process_state.inner().0.clone();
+    let ps = process_state.0.clone();
 
     tokio::task::spawn_blocking(move || {
-        transcribe_video_blocking(&app, &path, &model, threads, &holder, &ps)
+        transcribe_video_blocking(&app, &path, &model, threads, &ps)
     })
     .await
     .map_err(|e| format!("Erro interno: {}", e))?
@@ -189,7 +186,6 @@ fn transcribe_video_blocking(
     path: &str,
     model: &str,
     threads: u32,
-    _process_holder: &Arc<Mutex<Option<Child>>>,
     process_state: &Mutex<Option<Child>>,
 ) -> Result<String, String> {
     let video_path = Path::new(path);
@@ -391,7 +387,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(TranscribeProcess(Mutex::new(None)))
+        .manage(TranscribeProcess(Arc::new(Mutex::new(None))))
         .invoke_handler(tauri::generate_handler![
             transcribe_video,
             check_dependencies,
