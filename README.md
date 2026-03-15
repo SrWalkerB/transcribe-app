@@ -15,7 +15,7 @@ App desktop para transcrever videos usando inteligencia artificial (Whisper). Co
 - **Cancelamento** — cancele a qualquer momento e veja o resultado parcial
 - **Verificacao de dependencias** — o app verifica e ajuda a instalar o que falta
 
-## Requisitos
+## Requisitos 
 
 | Dependencia | Como instalar |
 |---|---|
