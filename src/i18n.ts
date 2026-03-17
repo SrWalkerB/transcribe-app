@@ -26,9 +26,19 @@ const translations = {
     es: "Antes de transcribir, verifica si las dependencias estan instaladas:",
   },
   "deps.ffmpeg.hint": {
-    "pt-BR": "Instale via gerenciador de pacotes (ex: sudo apt install ffmpeg)",
-    en: "Install via package manager (e.g.: sudo apt install ffmpeg)",
-    es: "Instala via gestor de paquetes (ej: sudo apt install ffmpeg)",
+    "pt-BR": "Clique em instalar para baixar a versão certa para seu sistema",
+    en: "Click install to download the right build for your system",
+    es: "Haz clic en instalar para descargar la versión correcta para tu sistema",
+  },
+  "deps.ffmpeg.install": {
+    "pt-BR": "Instalar FFmpeg",
+    en: "Install FFmpeg",
+    es: "Instalar FFmpeg",
+  },
+  "deps.ffmpeg.installing": {
+    "pt-BR": "Instalando FFmpeg...",
+    en: "Installing FFmpeg...",
+    es: "Instalando FFmpeg...",
   },
   "deps.python.hint": {
     "pt-BR": "Instale via python.org ou gerenciador de pacotes (ex: sudo apt install python3)",

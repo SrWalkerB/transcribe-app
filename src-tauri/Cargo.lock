@@ -4223,9 +4223,10 @@ dependencies = [
 
 [[package]]
 name = "transcribe-app"
-version = "0.1.0"
+version = "0.1.5"
 dependencies = [
  "chrono",
+ "dirs",
  "serde",
  "serde_json",
  "tauri",

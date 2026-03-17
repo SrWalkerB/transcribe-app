@@ -86,7 +86,7 @@ O Rust orquestra o processo, emitindo eventos em tempo real para o frontend via 
 
 - Trigger: push de tags `v*`
 - **Precisa de** `permissions: contents: write` (sem isso da "Resource not accessible by integration")
-- Matrix: ubuntu-22.04, windows-latest, macos-latest
+- Matrix: ubuntu-22.04, windows-latest
 - Usa `tauri-apps/tauri-action@v0`
 - Para criar release: `git tag v0.x.x && git push origin v0.x.x`
 

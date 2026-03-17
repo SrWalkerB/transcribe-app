@@ -71,7 +71,7 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-Isso dispara o workflow que builda para Linux, Windows e macOS e cria a release no GitHub com os instaladores.
+Isso dispara o workflow que builda para Linux e Windows e cria a release no GitHub com os instaladores.
 
 ## Arquitetura
 

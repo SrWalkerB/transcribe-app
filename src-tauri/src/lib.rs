@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
@@ -14,10 +14,40 @@ fn is_appimage() -> bool {
     std::env::var("APPIMAGE").is_ok()
 }
 
+/// Local folder used to store downloaded FFmpeg binaries.
+fn local_ffmpeg_bin_dir() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|base| base.join("transcribe-app").join("ffmpeg").join("bin"))
+}
+
+fn installed_command_path(name: &str) -> Option<String> {
+    let dir = local_ffmpeg_bin_dir()?;
+    let filename = if cfg!(windows) {
+        format!("{}.exe", name)
+    } else {
+        name.to_string()
+    };
+    let path = dir.join(filename);
+    if path.is_file() {
+        Some(path.to_string_lossy().to_string())
+    } else {
+        None
+    }
+}
+
 /// Resolve a command by searching common installation paths (Homebrew, system, etc.)
 /// This is needed because GUI apps on macOS may not inherit the full shell PATH,
 /// and AppImage bundles its own binaries that may conflict with system ones.
 fn resolve_command(name: &str) -> String {
+    resolve_command_any(&[name])
+}
+
+fn resolve_command_any(names: &[&str]) -> String {
+    for name in names {
+        if let Some(installed) = installed_command_path(name) {
+            return installed;
+        }
+    }
+
     let extra_paths = [
         "/opt/homebrew/bin",      // macOS Apple Silicon (Homebrew)
         "/usr/local/bin",         // macOS Intel (Homebrew) / Linux
@@ -28,28 +58,31 @@ fn resolve_command(name: &str) -> String {
     // Inside AppImage, skip paths that are inside the AppImage mount
     let appdir = std::env::var("APPDIR").unwrap_or_default();
 
-    for dir in &extra_paths {
-        // If inside AppImage, make sure we're finding the REAL system binary
-        if !appdir.is_empty() && dir.starts_with("/usr") {
-            // Check the real system path, not the AppImage overlay
-            let real_path = format!("{}/{}", dir, name);
-            // Verify it's not inside the AppImage mount
-            if let Ok(canonical) = std::fs::canonicalize(&real_path) {
-                let canon_str = canonical.to_string_lossy();
-                if canon_str.contains(".mount_") || canon_str.starts_with(&appdir) {
-                    continue; // skip AppImage's bundled binary
+    for name in names {
+        for dir in &extra_paths {
+            // If inside AppImage, make sure we're finding the REAL system binary
+            if !appdir.is_empty() && dir.starts_with("/usr") {
+                // Check the real system path, not the AppImage overlay
+                let real_path = format!("{}/{}", dir, name);
+                // Verify it's not inside the AppImage mount
+                if let Ok(canonical) = std::fs::canonicalize(&real_path) {
+                    let canon_str = canonical.to_string_lossy();
+                    if canon_str.contains(".mount_") || canon_str.starts_with(&appdir) {
+                        continue; // skip AppImage's bundled binary
+                    }
+                    return canonical.to_string_lossy().to_string();
                 }
-                return canonical.to_string_lossy().to_string();
+                continue;
             }
-            continue;
-        }
 
-        let full = format!("{}/{}", dir, name);
-        if Path::new(&full).is_file() {
-            return full;
+            let full = format!("{}/{}", dir, name);
+            if Path::new(&full).is_file() {
+                return full;
+            }
         }
     }
-    name.to_string() // fallback to PATH lookup
+
+    names.first().unwrap_or(&"").to_string() // fallback to PATH lookup
 }
 
 /// Create a Command that clears AppImage Python environment variables.
@@ -84,7 +117,7 @@ fn resolve_python(script_path: Option<&Path>) -> String {
             return venv;
         }
     }
-    resolve_command("python3")
+    resolve_command_any(&["python3", "python"])
 }
 
 #[derive(Serialize)]
@@ -223,6 +256,72 @@ fn install_dependencies_blocking(python_bin: &str) -> Result<String, String> {
     let stderr = String::from_utf8_lossy(&output.stderr);
     Err(format!(
         "Falha ao instalar faster-whisper.\n\nTente manualmente:\n  pip install --user faster-whisper\n  ou: pipx install faster-whisper\n\nDetalhe: {}",
+        stderr.lines().take(5).collect::<Vec<_>>().join("\n")
+    ))
+}
+
+#[tauri::command]
+async fn install_ffmpeg(app: tauri::AppHandle) -> Result<String, String> {
+    let script_path = app
+        .path()
+        .resolve("resources/install_ffmpeg.py", BaseDirectory::Resource)
+        .map_err(|e| format!("Script install_ffmpeg.py não encontrado no app: {:?}", e))?;
+    let transcribe_script = app
+        .path()
+        .resolve("resources/transcribe.py", BaseDirectory::Resource)
+        .ok();
+    let python_bin = resolve_python(transcribe_script.as_deref());
+    let install_dir = local_ffmpeg_bin_dir()
+        .ok_or_else(|| "Não foi possível localizar a pasta de dados do app".to_string())?;
+    let script_path = script_path
+        .to_str()
+        .ok_or_else(|| "Path do script inválido (encoding)".to_string())?
+        .to_string();
+    let install_dir = install_dir
+        .to_str()
+        .ok_or_else(|| "Path de instalação inválido (encoding)".to_string())?
+        .to_string();
+
+    tokio::task::spawn_blocking(move || install_ffmpeg_blocking(&python_bin, &script_path, &install_dir))
+        .await
+        .map_err(|e| format!("Erro interno: {}", e))?
+}
+
+fn install_ffmpeg_blocking(
+    python_bin: &str,
+    script_path: &str,
+    install_dir: &str,
+) -> Result<String, String> {
+    let python_ok = python_command(python_bin)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if !python_ok {
+        return Err(
+            "Python 3 não encontrado. Instale o Python 3 primeiro: https://www.python.org/downloads/"
+                .to_string(),
+        );
+    }
+
+    let output = python_command(python_bin)
+        .arg(script_path)
+        .arg(install_dir)
+        .output()
+        .map_err(|e| format!("Falha ao executar instalador do FFmpeg: {}", e))?;
+
+    if output.status.success() {
+        return Ok("FFmpeg instalado com sucesso!".to_string());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(format!(
+        "Falha ao instalar FFmpeg.\n\nDetalhe: {}\n{}",
+        stdout.lines().take(5).collect::<Vec<_>>().join("\n"),
         stderr.lines().take(5).collect::<Vec<_>>().join("\n")
     ))
 }
@@ -501,6 +600,7 @@ pub fn run() {
             transcribe_video,
             check_dependencies,
             install_dependencies,
+            install_ffmpeg,
             get_cpu_count,
             get_video_duration,
             cancel_transcription

@@ -15,12 +15,27 @@ interface DependencyCheckProps {
 
 export default function DependencyCheck({ deps, onRecheck }: DependencyCheckProps) {
   const { t } = useLang();
-  const [installing, setInstalling] = useState(false);
+  const [installingTarget, setInstallingTarget] = useState<"ffmpeg" | "whisper" | null>(null);
   const [installMsg, setInstallMsg] = useState("");
   const [installError, setInstallError] = useState("");
 
+  async function handleInstallFfmpeg() {
+    setInstallingTarget("ffmpeg");
+    setInstallMsg("");
+    setInstallError("");
+    try {
+      const result = await invoke<string>("install_ffmpeg");
+      setInstallMsg(result);
+      setTimeout(() => onRecheck(), 1500);
+    } catch (err) {
+      setInstallError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setInstallingTarget(null);
+    }
+  }
+
   async function handleInstallFasterWhisper() {
-    setInstalling(true);
+    setInstallingTarget("whisper");
     setInstallMsg("");
     setInstallError("");
     try {
@@ -30,7 +45,7 @@ export default function DependencyCheck({ deps, onRecheck }: DependencyCheckProp
     } catch (err) {
       setInstallError(err instanceof Error ? err.message : String(err));
     } finally {
-      setInstalling(false);
+      setInstallingTarget(null);
     }
   }
 
@@ -48,6 +63,23 @@ export default function DependencyCheck({ deps, onRecheck }: DependencyCheckProp
               <span className="deps-hint">{t("deps.ffmpeg.hint")}</span>
             )}
           </div>
+          {!deps.ffmpeg && deps.python && (
+            <button
+              type="button"
+              className="settings-dep__install"
+              onClick={handleInstallFfmpeg}
+              disabled={installingTarget !== null}
+            >
+              {installingTarget === "ffmpeg" ? (
+                <>
+                  <span className="spinner spinner--small" />
+                  {t("deps.ffmpeg.installing")}
+                </>
+              ) : (
+                t("deps.ffmpeg.install")
+              )}
+            </button>
+          )}
         </div>
 
         <div className={`deps-item ${deps.python ? "deps-item--ok" : "deps-item--missing"}`}>
@@ -92,9 +124,9 @@ export default function DependencyCheck({ deps, onRecheck }: DependencyCheckProp
             type="button"
             className="btn-transcribe"
             onClick={handleInstallFasterWhisper}
-            disabled={installing}
+            disabled={installingTarget !== null}
           >
-            {installing ? (
+            {installingTarget === "whisper" ? (
               <>
                 <span className="spinner" />
                 {t("deps.installing")}
@@ -109,6 +141,7 @@ export default function DependencyCheck({ deps, onRecheck }: DependencyCheckProp
           type="button"
           className="btn-new"
           onClick={onRecheck}
+          disabled={installingTarget !== null}
         >
           {t("deps.recheck")}
         </button>

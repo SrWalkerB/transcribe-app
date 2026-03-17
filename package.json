@@ -1,7 +1,7 @@
 {
   "name": "transcribe-app",
   "private": true,
-  "version": "0.1.2",
+  "version": "0.1.5",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,8 +9,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "build:linux": "tauri build --bundles deb,rpm,appimage",
-    "build:windows": "tauri build --bundles msi,nsis",
-    "build:mac": "tauri build --bundles dmg"
+    "build:windows": "tauri build --bundles msi,nsis"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

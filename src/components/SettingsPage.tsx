@@ -18,7 +18,7 @@ export default function SettingsPage({ onContinue, isFirstRun }: SettingsPagePro
   const { lang, setLang, t } = useLang();
   const [deps, setDeps] = useState<DependencyStatus | null>(null);
   const [checking, setChecking] = useState(true);
-  const [installing, setInstalling] = useState(false);
+  const [installingTarget, setInstallingTarget] = useState<"ffmpeg" | "whisper" | null>(null);
   const [installMsg, setInstallMsg] = useState("");
   const [installError, setInstallError] = useState("");
 
@@ -39,7 +39,7 @@ export default function SettingsPage({ onContinue, isFirstRun }: SettingsPagePro
   }
 
   async function handleInstallFasterWhisper() {
-    setInstalling(true);
+    setInstallingTarget("whisper");
     setInstallMsg("");
     setInstallError("");
     try {
@@ -49,7 +49,22 @@ export default function SettingsPage({ onContinue, isFirstRun }: SettingsPagePro
     } catch (err) {
       setInstallError(err instanceof Error ? err.message : String(err));
     } finally {
-      setInstalling(false);
+      setInstallingTarget(null);
+    }
+  }
+
+  async function handleInstallFfmpeg() {
+    setInstallingTarget("ffmpeg");
+    setInstallMsg("");
+    setInstallError("");
+    try {
+      const result = await invoke<string>("install_ffmpeg");
+      setInstallMsg(result);
+      setTimeout(() => checkDeps(), 1500);
+    } catch (err) {
+      setInstallError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setInstallingTarget(null);
     }
   }
 
@@ -120,7 +135,15 @@ export default function SettingsPage({ onContinue, isFirstRun }: SettingsPagePro
           </div>
         ) : deps ? (
           <div className="settings-page__deps-list">
-            <DepItem name="FFmpeg" ok={deps.ffmpeg} hint={!deps.ffmpeg ? t("deps.ffmpeg.hint") : undefined} />
+            <DepItem
+              name="FFmpeg"
+              ok={deps.ffmpeg}
+              hint={!deps.ffmpeg ? t("deps.ffmpeg.hint") : undefined}
+              canInstall={!deps.ffmpeg && deps.python}
+              installing={installingTarget === "ffmpeg"}
+              onInstall={handleInstallFfmpeg}
+              installLabel={installingTarget === "ffmpeg" ? t("deps.ffmpeg.installing") : t("deps.ffmpeg.install")}
+            />
             <DepItem name="Python 3" ok={deps.python} hint={!deps.python ? t("deps.python.hint") : undefined} />
             <DepItem
               name="faster-whisper"
@@ -133,9 +156,9 @@ export default function SettingsPage({ onContinue, isFirstRun }: SettingsPagePro
                     : undefined
               }
               canInstall={!deps.faster_whisper && deps.python}
-              installing={installing}
+              installing={installingTarget === "whisper"}
               onInstall={handleInstallFasterWhisper}
-              installLabel={installing ? t("deps.installing") : t("deps.install")}
+              installLabel={installingTarget === "whisper" ? t("deps.installing") : t("deps.install")}
             />
           </div>
         ) : null}
