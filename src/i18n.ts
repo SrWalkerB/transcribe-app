@@ -41,9 +41,9 @@ const translations = {
     es: "Instalando FFmpeg...",
   },
   "deps.python.hint.windows": {
-    "pt-BR": "Clique em instalar — tenta winget, com fallback para o instalador oficial do python.org",
-    en: "Click install — tries winget, falls back to the official python.org installer",
-    es: "Haz clic en instalar — intenta winget, con fallback al instalador oficial de python.org",
+    "pt-BR": "Clique em instalar — o app baixa um Python portátil próprio (via uv), sem tocar no sistema",
+    en: "Click install — the app downloads its own portable Python (via uv), leaving your system untouched",
+    es: "Haz clic en instalar — la app descarga un Python portátil propio (vía uv), sin tocar el sistema",
   },
   "deps.python.hint.macos": {
     "pt-BR": "Instale via python.org ou `brew install python3`",

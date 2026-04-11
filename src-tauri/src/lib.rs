@@ -30,6 +30,56 @@ fn local_ffmpeg_bin_dir() -> Option<PathBuf> {
     dirs::data_local_dir().map(|base| base.join("transcribe-app").join("ffmpeg").join("bin"))
 }
 
+/// App-managed uv binary directory (Windows only).
+#[cfg(windows)]
+fn local_uv_dir() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|base| base.join("transcribe-app").join("uv"))
+}
+
+#[cfg(windows)]
+fn local_uv_exe() -> Option<String> {
+    let exe = local_uv_dir()?.join("uv.exe");
+    if exe.is_file() {
+        Some(exe.to_string_lossy().to_string())
+    } else {
+        None
+    }
+}
+
+/// App-managed Python venv directory (Windows only).
+/// Contains a self-contained Python 3.12 runtime (via uv) with faster-whisper.
+#[cfg(windows)]
+fn local_runtime_dir() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|base| base.join("transcribe-app").join("runtime"))
+}
+
+#[cfg(windows)]
+fn local_runtime_python() -> Option<String> {
+    let exe = local_runtime_dir()?.join("Scripts").join("python.exe");
+    if exe.is_file() {
+        Some(exe.to_string_lossy().to_string())
+    } else {
+        None
+    }
+}
+
+/// Where uv stores the downloaded Python interpreters.
+#[cfg(windows)]
+fn local_python_install_dir() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|base| base.join("transcribe-app").join("python"))
+}
+
+#[cfg(windows)]
+fn is_local_runtime_python(path: &str) -> bool {
+    match local_runtime_dir() {
+        Some(dir) => {
+            let dir_str = dir.to_string_lossy().to_lowercase();
+            path.to_lowercase().starts_with(&dir_str)
+        }
+        None => false,
+    }
+}
+
 fn installed_command_path(name: &str) -> Option<String> {
     let dir = local_ffmpeg_bin_dir()?;
     let filename = if cfg!(windows) {
@@ -50,6 +100,161 @@ fn installed_command_path(name: &str) -> Option<String> {
 /// and AppImage bundles its own binaries that may conflict with system ones.
 fn resolve_command(name: &str) -> String {
     resolve_command_any(&[name])
+}
+
+/// Download `uv.exe` from GitHub releases into `local_uv_dir()`.
+#[cfg(windows)]
+fn download_uv_windows() -> Result<String, String> {
+    let uv_dir = local_uv_dir().ok_or_else(|| "Pasta de dados indisponível".to_string())?;
+    let uv_dir_str = uv_dir.to_string_lossy().replace('\'', "''");
+    let ps_script = format!(
+        "$ErrorActionPreference='Stop'; \
+         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; \
+         $url = 'https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip'; \
+         $tmp = Join-Path $env:TEMP ('uv-dl-' + [guid]::NewGuid() + '.zip'); \
+         $ext = Join-Path $env:TEMP ('uv-ext-' + [guid]::NewGuid()); \
+         Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing; \
+         Expand-Archive -Path $tmp -DestinationPath $ext -Force; \
+         New-Item -ItemType Directory -Force -Path '{dir}' | Out-Null; \
+         Get-ChildItem -Path $ext -Recurse -Include uv.exe,uvx.exe | ForEach-Object {{ Copy-Item $_.FullName -Destination '{dir}' -Force }}; \
+         Remove-Item $tmp,$ext -Recurse -Force -ErrorAction SilentlyContinue; \
+         if (-not (Test-Path (Join-Path '{dir}' 'uv.exe'))) {{ throw 'uv.exe não encontrado após extração' }}",
+        dir = uv_dir_str
+    );
+    let mut cmd = Command::new("powershell");
+    suppress_console(&mut cmd);
+    let out = cmd
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &ps_script])
+        .output()
+        .map_err(|e| format!("Falha ao executar PowerShell para baixar uv: {}", e))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(format!(
+            "Falha ao baixar o uv:\n{}",
+            stderr.lines().take(8).collect::<Vec<_>>().join("\n")
+        ));
+    }
+    local_uv_exe().ok_or_else(|| "uv.exe não foi instalado".to_string())
+}
+
+#[cfg(windows)]
+fn ensure_uv_windows() -> Result<String, String> {
+    if let Some(p) = local_uv_exe() {
+        return Ok(p);
+    }
+    download_uv_windows()
+}
+
+/// Create a self-contained Python 3.12 venv via uv, auto-downloading Python if needed.
+#[cfg(windows)]
+fn install_python_via_uv() -> Result<String, String> {
+    let uv = ensure_uv_windows()?;
+    let runtime = local_runtime_dir().ok_or_else(|| "Pasta de runtime indisponível".to_string())?;
+    let python_install = local_python_install_dir().ok_or_else(|| "Pasta de Python indisponível".to_string())?;
+
+    if let Some(parent) = runtime.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::create_dir_all(&python_install);
+
+    // uv venv --python 3.12 --seed <runtime>
+    // UV_PYTHON_INSTALL_DIR: força uv a baixar Python dentro da pasta do app
+    // UV_PYTHON_PREFERENCE=only-managed: ignora Python do sistema, usa só o gerenciado pelo uv
+    let runtime_str = runtime.to_string_lossy().to_string();
+    let mut cmd = Command::new(&uv);
+    suppress_console(&mut cmd);
+    let out = cmd
+        .env("UV_PYTHON_INSTALL_DIR", python_install.as_os_str())
+        .env("UV_PYTHON_PREFERENCE", "only-managed")
+        .args(["venv", "--python", "3.12", "--seed", &runtime_str])
+        .output()
+        .map_err(|e| format!("Falha ao executar uv venv: {}", e))?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        return Err(format!(
+            "uv venv falhou.\n\nstdout:\n{}\n\nstderr:\n{}",
+            stdout.lines().take(8).collect::<Vec<_>>().join("\n"),
+            stderr.lines().take(8).collect::<Vec<_>>().join("\n")
+        ));
+    }
+
+    local_runtime_python().ok_or_else(|| {
+        "Venv criada mas python.exe não foi encontrado em runtime\\Scripts".to_string()
+    })
+}
+
+/// Query the Windows registry via PowerShell for Pythons installed per PEP 514.
+/// This catches Pythons that aren't on PATH and weren't installed with the py launcher.
+#[cfg(windows)]
+fn python_from_registry() -> Option<String> {
+    let ps_script = r#"
+        $ErrorActionPreference='SilentlyContinue';
+        $roots = @(
+            'HKCU:\Software\Python\PythonCore',
+            'HKLM:\Software\Python\PythonCore',
+            'HKLM:\Software\WOW6432Node\Python\PythonCore'
+        );
+        foreach ($root in $roots) {
+            if (Test-Path $root) {
+                Get-ChildItem $root | ForEach-Object {
+                    $ip = Join-Path $_.PSPath 'InstallPath';
+                    if (Test-Path $ip) {
+                        $prop = Get-ItemProperty $ip;
+                        $dir = $prop.'(default)';
+                        if (-not $dir) { $dir = $prop.'ExecutablePath' | Split-Path -Parent }
+                        if ($dir) {
+                            $exe = Join-Path $dir 'python.exe';
+                            if (Test-Path $exe) { Write-Output $exe }
+                        }
+                    }
+                }
+            }
+        }
+    "#;
+    let mut cmd = Command::new("powershell");
+    suppress_console(&mut cmd);
+    let output = cmd
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_script])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    for line in text.lines() {
+        let path = line.trim();
+        if path.to_lowercase().ends_with("python.exe") && Path::new(path).is_file() {
+            return Some(path.to_string());
+        }
+    }
+    None
+}
+
+/// Use `where.exe` to locate a command in PATH — works even when we can't inherit it.
+#[cfg(windows)]
+fn python_from_where() -> Option<String> {
+    for name in &["python.exe", "python3.exe"] {
+        let mut cmd = Command::new("where");
+        suppress_console(&mut cmd);
+        if let Ok(output) = cmd.arg(name).output() {
+            if output.status.success() {
+                let text = String::from_utf8_lossy(&output.stdout);
+                for line in text.lines() {
+                    let path = line.trim();
+                    // Pular o stub da Microsoft Store (WindowsApps) que só redireciona pra store.
+                    if path.to_lowercase().contains("\\windowsapps\\") {
+                        continue;
+                    }
+                    if Path::new(path).is_file() {
+                        return Some(path.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 #[cfg(windows)]
@@ -92,10 +297,23 @@ fn resolve_command_any(names: &[&str]) -> String {
 
     #[cfg(windows)]
     {
-        // Para python, usar o launcher py.exe para descobrir instalações dinamicamente.
+        // Para python, tentar descobrir dinamicamente, nesta ordem:
+        //  1. Runtime próprio do app (venv criada via uv) — caminho padrão.
+        //  2. Registro do Windows (PEP 514) — Python instalado pelo usuário.
+        //  3. Launcher py.exe.
+        //  4. where.exe / scan de diretórios (feito abaixo).
         let wants_python = names.iter().any(|n| *n == "python" || *n == "python3");
         if wants_python {
+            if let Some(p) = local_runtime_python() {
+                return p;
+            }
+            if let Some(p) = python_from_registry() {
+                return p;
+            }
             if let Some(p) = python_from_py_launcher() {
+                return p;
+            }
+            if let Some(p) = python_from_where() {
                 return p;
             }
         }
@@ -297,6 +515,43 @@ fn install_dependencies_blocking(python_bin: &str) -> Result<String, String> {
         );
     }
 
+    // Strategy 0 (Windows): runtime próprio do app — usar uv pip install (rápido) ou pip sem --user.
+    #[cfg(windows)]
+    {
+        if is_local_runtime_python(python_bin) {
+            // Preferir uv pip se disponível (mais rápido e resolve deps melhor).
+            if let Some(uv) = local_uv_exe() {
+                let mut cmd = Command::new(&uv);
+                suppress_console(&mut cmd);
+                let out = cmd
+                    .args(["pip", "install", "--python", python_bin, "faster-whisper"])
+                    .output()
+                    .map_err(|e| format!("Falha ao executar uv pip: {}", e))?;
+                if out.status.success() {
+                    return Ok("faster-whisper instalado no runtime do app (via uv)!".to_string());
+                }
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                return Err(format!(
+                    "Falha ao instalar faster-whisper via uv pip:\n{}",
+                    stderr.lines().take(8).collect::<Vec<_>>().join("\n")
+                ));
+            }
+            // Sem uv (improvável): pip direto dentro da venv, sem --user.
+            let out = python_command(python_bin)
+                .args(["-m", "pip", "install", "faster-whisper"])
+                .output()
+                .map_err(|e| format!("Falha ao executar pip: {}", e))?;
+            if out.status.success() {
+                return Ok("faster-whisper instalado no runtime do app!".to_string());
+            }
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            return Err(format!(
+                "Falha ao instalar faster-whisper:\n{}",
+                stderr.lines().take(8).collect::<Vec<_>>().join("\n")
+            ));
+        }
+    }
+
     // Strategy 1: pip install --user (works on externally-managed environments)
     let output = python_command(python_bin)
         .arg("-m")
@@ -379,100 +634,20 @@ fn detect_python_windows() -> Option<String> {
 
 #[cfg(windows)]
 fn install_python_blocking() -> Result<String, String> {
-    // Passo 1: já existe? Se sim, apenas reportar sucesso.
-    if let Some(path) = detect_python_windows() {
-        return Ok(format!(
-            "Python já está instalado em {}. Clique em Verificar novamente.",
+    // Caminho único e confiável: baixar uv e criar um runtime portátil do app.
+    // Não dependemos de winget, instalador oficial, Microsoft Store ou PATH do usuário.
+    // Se o usuário já tem Python instalado e funcionando, `resolve_command_any` vai
+    // achar via registro/py launcher/where, então `check_dependencies` já retornaria ok
+    // sem nem cair aqui. Este caminho serve para quem NÃO tem Python.
+    match install_python_via_uv() {
+        Ok(path) => Ok(format!(
+            "Python portátil instalado em {}. Clique em Verificar novamente.",
             path
-        ));
-    }
-
-    // Passo 2: tentar winget.
-    let mut cmd = Command::new("winget");
-    suppress_console(&mut cmd);
-    let winget_result = cmd
-        .args([
-            "install",
-            "-e",
-            "--id",
-            "Python.Python.3.12",
-            "--accept-source-agreements",
-            "--accept-package-agreements",
-            "--scope",
-            "user",
-            "--silent",
-        ])
-        .output();
-
-    let winget_detail: String = match winget_result {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            let combined = format!("{}\n{}", stdout, stderr);
-
-            // Se o winget diz "já instalado" ou sucesso, re-tentar detectar.
-            let already = combined.contains("already installed")
-                || combined.contains("No available upgrade")
-                || combined.contains("No newer package versions");
-            if output.status.success() || already {
-                if let Some(path) = detect_python_windows() {
-                    return Ok(format!(
-                        "Python detectado em {}. Clique em Verificar novamente.",
-                        path
-                    ));
-                }
-            }
-            combined
-        }
-        Err(e) => format!("Não foi possível executar o winget: {}", e),
-    };
-
-    // Passo 3: fallback — baixar o instalador oficial via PowerShell e rodar silencioso.
-    let installer_url = "https://www.python.org/ftp/python/3.12.8/python-3.12.8-amd64.exe";
-    let ps_script = format!(
-        "$ErrorActionPreference='Stop'; \
-         $tmp = Join-Path $env:TEMP ('python-installer-' + [guid]::NewGuid() + '.exe'); \
-         Invoke-WebRequest -Uri '{url}' -OutFile $tmp -UseBasicParsing; \
-         $p = Start-Process -FilePath $tmp -ArgumentList '/quiet','InstallAllUsers=0','PrependPath=1','Include_launcher=1','Include_pip=1' -Wait -PassThru; \
-         Remove-Item $tmp -Force -ErrorAction SilentlyContinue; \
-         if ($p.ExitCode -ne 0) {{ throw \"Installer exit code $($p.ExitCode)\" }}",
-        url = installer_url
-    );
-
-    let mut ps = Command::new("powershell");
-    suppress_console(&mut ps);
-    let ps_out = ps
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &ps_script])
-        .output();
-
-    match ps_out {
-        Ok(out) if out.status.success() => {
-            if let Some(path) = detect_python_windows() {
-                return Ok(format!(
-                    "Python instalado em {} via installer oficial. Clique em Verificar novamente.",
-                    path
-                ));
-            }
-            // Instalou mas ainda não achamos — provavelmente PATH novo ainda não aplicado.
-            return Ok(
-                "Python instalado via installer oficial. Reinicie o app e clique em Verificar novamente.".into(),
-            );
-        }
-        Ok(out) => {
-            let ps_stderr = String::from_utf8_lossy(&out.stderr);
-            return Err(format!(
-                "Falha ao instalar Python.\n\nWinget:\n{}\n\nInstaller oficial:\n{}\n\nBaixe manualmente em https://www.python.org/downloads/",
-                winget_detail.lines().take(5).collect::<Vec<_>>().join("\n"),
-                ps_stderr.lines().take(5).collect::<Vec<_>>().join("\n"),
-            ));
-        }
-        Err(e) => {
-            return Err(format!(
-                "Falha ao instalar Python.\n\nWinget:\n{}\n\nPowerShell indisponível: {}\n\nBaixe manualmente em https://www.python.org/downloads/",
-                winget_detail.lines().take(5).collect::<Vec<_>>().join("\n"),
-                e
-            ));
-        }
+        )),
+        Err(e) => Err(format!(
+            "Falha ao preparar o Python portátil via uv.\n\n{}\n\nSe o problema persistir, baixe o Python manualmente em https://www.python.org/downloads/ marcando 'Add python.exe to PATH'.",
+            e
+        )),
     }
 }
 
