@@ -1,7 +1,19 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
+import { check, type Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { LANGUAGES } from "../i18n";
 import { useLang } from "../LangContext";
+
+type UpdateStatus =
+  | "idle"
+  | "checking"
+  | "upToDate"
+  | "available"
+  | "downloading"
+  | "installing"
+  | "error";
 
 interface DependencyStatus {
   ffmpeg: boolean;
@@ -14,17 +26,80 @@ interface SettingsPageProps {
   isFirstRun: boolean;
 }
 
+type Platform = "windows" | "macos" | "linux";
+
 export default function SettingsPage({ onContinue, isFirstRun }: SettingsPageProps) {
   const { lang, setLang, t } = useLang();
   const [deps, setDeps] = useState<DependencyStatus | null>(null);
   const [checking, setChecking] = useState(true);
-  const [installingTarget, setInstallingTarget] = useState<"ffmpeg" | "whisper" | null>(null);
+  const [installingTarget, setInstallingTarget] = useState<
+    "ffmpeg" | "whisper" | "python" | null
+  >(null);
   const [installMsg, setInstallMsg] = useState("");
   const [installError, setInstallError] = useState("");
+  const [platform, setPlatform] = useState<Platform>("linux");
+  const [currentVersion, setCurrentVersion] = useState<string>("");
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus>("idle");
+  const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
+  const [downloadedBytes, setDownloadedBytes] = useState(0);
+  const [totalBytes, setTotalBytes] = useState(0);
+  const [updateError, setUpdateError] = useState("");
 
   useEffect(() => {
     checkDeps();
+    invoke<string>("get_platform")
+      .then((p) => {
+        if (p === "windows" || p === "macos" || p === "linux") {
+          setPlatform(p);
+        }
+      })
+      .catch(() => {});
+    getVersion()
+      .then(setCurrentVersion)
+      .catch(() => {});
+    checkForUpdate();
   }, []);
+
+  async function checkForUpdate() {
+    setUpdateStatus("checking");
+    setUpdateError("");
+    try {
+      const update = await check();
+      if (update) {
+        setAvailableUpdate(update);
+        setUpdateStatus("available");
+      } else {
+        setAvailableUpdate(null);
+        setUpdateStatus("upToDate");
+      }
+    } catch (err) {
+      setUpdateError(err instanceof Error ? err.message : String(err));
+      setUpdateStatus("error");
+    }
+  }
+
+  async function handleInstallUpdate() {
+    if (!availableUpdate) return;
+    setUpdateStatus("downloading");
+    setUpdateError("");
+    setDownloadedBytes(0);
+    setTotalBytes(0);
+    try {
+      await availableUpdate.downloadAndInstall((event) => {
+        if (event.event === "Started") {
+          setTotalBytes(event.data.contentLength ?? 0);
+        } else if (event.event === "Progress") {
+          setDownloadedBytes((prev) => prev + event.data.chunkLength);
+        } else if (event.event === "Finished") {
+          setUpdateStatus("installing");
+        }
+      });
+      await relaunch();
+    } catch (err) {
+      setUpdateError(err instanceof Error ? err.message : String(err));
+      setUpdateStatus("error");
+    }
+  }
 
   async function checkDeps() {
     setChecking(true);
@@ -59,6 +134,21 @@ export default function SettingsPage({ onContinue, isFirstRun }: SettingsPagePro
     setInstallError("");
     try {
       const result = await invoke<string>("install_ffmpeg");
+      setInstallMsg(result);
+      setTimeout(() => checkDeps(), 1500);
+    } catch (err) {
+      setInstallError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setInstallingTarget(null);
+    }
+  }
+
+  async function handleInstallPython() {
+    setInstallingTarget("python");
+    setInstallMsg("");
+    setInstallError("");
+    try {
+      const result = await invoke<string>("install_python");
       setInstallMsg(result);
       setTimeout(() => checkDeps(), 1500);
     } catch (err) {
@@ -144,7 +234,15 @@ export default function SettingsPage({ onContinue, isFirstRun }: SettingsPagePro
               onInstall={handleInstallFfmpeg}
               installLabel={installingTarget === "ffmpeg" ? t("deps.ffmpeg.installing") : t("deps.ffmpeg.install")}
             />
-            <DepItem name="Python 3" ok={deps.python} hint={!deps.python ? t("deps.python.hint") : undefined} />
+            <DepItem
+              name="Python 3"
+              ok={deps.python}
+              hint={!deps.python ? t(`deps.python.hint.${platform}`) : undefined}
+              canInstall={!deps.python && platform === "windows"}
+              installing={installingTarget === "python"}
+              onInstall={handleInstallPython}
+              installLabel={installingTarget === "python" ? t("deps.python.installing") : t("deps.python.install")}
+            />
             <DepItem
               name="faster-whisper"
               ok={deps.faster_whisper}
@@ -173,6 +271,83 @@ export default function SettingsPage({ onContinue, isFirstRun }: SettingsPagePro
           <div className="error-banner error-banner--compact">
             <p>{installError}</p>
           </div>
+        )}
+      </div>
+
+      {/* Updates section */}
+      <div className="settings-page__section">
+        <div className="settings-page__section-header">
+          <label className="settings-page__label">{t("updates.title")}</label>
+          <button
+            type="button"
+            className="settings-page__recheck"
+            onClick={checkForUpdate}
+            disabled={updateStatus === "checking" || updateStatus === "downloading" || updateStatus === "installing"}
+          >
+            {updateStatus === "checking" ? (
+              <span className="spinner spinner--small" />
+            ) : (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="1 4 1 10 7 10" />
+                <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+              </svg>
+            )}
+            {t("updates.check")}
+          </button>
+        </div>
+
+        <div className="settings-dep">
+          <div className="settings-dep__info">
+            <span className="settings-dep__name">
+              {t("updates.current")}: {currentVersion || "—"}
+            </span>
+            {updateStatus === "checking" && (
+              <span className="settings-dep__hint">{t("updates.checking")}</span>
+            )}
+            {updateStatus === "upToDate" && (
+              <span className="settings-dep__hint">{t("updates.upToDate")}</span>
+            )}
+            {updateStatus === "available" && availableUpdate && (
+              <span className="settings-dep__hint">
+                {t("updates.available")}: {availableUpdate.version}
+              </span>
+            )}
+            {updateStatus === "downloading" && (
+              <span className="settings-dep__hint">
+                {t("updates.downloading")}
+                {totalBytes > 0
+                  ? ` ${Math.round((downloadedBytes / totalBytes) * 100)}%`
+                  : ""}
+              </span>
+            )}
+            {updateStatus === "installing" && (
+              <span className="settings-dep__hint">{t("updates.installing")}</span>
+            )}
+            {updateStatus === "error" && updateError && (
+              <span className="settings-dep__hint">{updateError}</span>
+            )}
+          </div>
+          {updateStatus === "available" && (
+            <button
+              type="button"
+              className="settings-dep__install"
+              onClick={handleInstallUpdate}
+            >
+              {t("updates.install")}
+            </button>
+          )}
+          {(updateStatus === "downloading" || updateStatus === "installing") && (
+            <button type="button" className="settings-dep__install" disabled>
+              <span className="spinner spinner--small" />
+              {updateStatus === "downloading"
+                ? t("updates.downloading")
+                : t("updates.installing")}
+            </button>
+          )}
+        </div>
+
+        {updateStatus === "available" && (
+          <p className="settings-page__hint">{t("updates.restartHint")}</p>
         )}
       </div>
 

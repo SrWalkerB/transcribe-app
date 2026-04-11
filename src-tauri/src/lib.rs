@@ -59,6 +59,29 @@ fn resolve_command_any(names: &[&str]) -> String {
         }
     }
 
+    #[cfg(windows)]
+    {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            let win_dirs = [
+                format!("{}\\Programs\\Python\\Python313", local),
+                format!("{}\\Programs\\Python\\Python313\\Scripts", local),
+                format!("{}\\Programs\\Python\\Python312", local),
+                format!("{}\\Programs\\Python\\Python312\\Scripts", local),
+                format!("{}\\Programs\\Python\\Python311", local),
+                format!("{}\\Programs\\Python\\Python311\\Scripts", local),
+                format!("{}\\Microsoft\\WindowsApps", local),
+            ];
+            for name in names {
+                for dir in &win_dirs {
+                    let full = format!("{}\\{}.exe", dir, name);
+                    if Path::new(&full).is_file() {
+                        return full;
+                    }
+                }
+            }
+        }
+    }
+
     let extra_paths = [
         "/opt/homebrew/bin",      // macOS Apple Silicon (Homebrew)
         "/usr/local/bin",         // macOS Intel (Homebrew) / Linux
@@ -275,6 +298,66 @@ fn install_dependencies_blocking(python_bin: &str) -> Result<String, String> {
         "Falha ao instalar faster-whisper.\n\nTente manualmente:\n  pip install --user faster-whisper\n  ou: pipx install faster-whisper\n\nDetalhe: {}",
         stderr.lines().take(5).collect::<Vec<_>>().join("\n")
     ))
+}
+
+#[tauri::command]
+fn get_platform() -> &'static str {
+    if cfg!(windows) {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "linux"
+    }
+}
+
+#[tauri::command]
+async fn install_python() -> Result<String, String> {
+    tokio::task::spawn_blocking(install_python_blocking)
+        .await
+        .map_err(|e| format!("Erro interno: {}", e))?
+}
+
+#[cfg(windows)]
+fn install_python_blocking() -> Result<String, String> {
+    let mut cmd = Command::new("winget");
+    suppress_console(&mut cmd);
+    let output = cmd
+        .args([
+            "install",
+            "-e",
+            "--id",
+            "Python.Python.3.12",
+            "--accept-source-agreements",
+            "--accept-package-agreements",
+            "--scope",
+            "user",
+            "--silent",
+        ])
+        .output()
+        .map_err(|e| {
+            format!(
+                "Não foi possível executar o winget: {}.\n\nInstale o App Installer pela Microsoft Store ou baixe manualmente em https://www.python.org/downloads/",
+                e
+            )
+        })?;
+
+    if output.status.success() {
+        return Ok("Python instalado com sucesso! Pode ser necessário reiniciar o app.".into());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(format!(
+        "Falha ao instalar Python via winget.\n\nDetalhe:\n{}\n{}",
+        stdout.lines().take(5).collect::<Vec<_>>().join("\n"),
+        stderr.lines().take(5).collect::<Vec<_>>().join("\n"),
+    ))
+}
+
+#[cfg(not(windows))]
+fn install_python_blocking() -> Result<String, String> {
+    Err("Instalação automática do Python só é suportada no Windows.".into())
 }
 
 #[tauri::command]
@@ -661,6 +744,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(TranscribeProcess(Arc::new(Mutex::new(TranscribeState {
             child: None,
             cancel_requested: false,
@@ -670,6 +755,8 @@ pub fn run() {
             check_dependencies,
             install_dependencies,
             install_ffmpeg,
+            install_python,
+            get_platform,
             get_cpu_count,
             get_video_duration,
             cancel_transcription

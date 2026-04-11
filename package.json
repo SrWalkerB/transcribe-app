@@ -1,7 +1,7 @@
 {
   "name": "transcribe-app",
   "private": true,
-  "version": "0.1.7",
+  "version": "0.1.8",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,12 +9,15 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "build:linux": "tauri build --bundles deb,rpm,appimage",
-    "build:windows": "tauri build --target x86_64-pc-windows-msvc --bundles msi,nsis"
+    "build:windows": "tauri build --target x86_64-pc-windows-msvc --bundles msi,nsis",
+    "gen:keys": "node scripts/generate-signing-keys.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.6.0",
     "@tauri-apps/plugin-opener": "^2",
+    "@tauri-apps/plugin-process": "^2",
+    "@tauri-apps/plugin-updater": "^2",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },

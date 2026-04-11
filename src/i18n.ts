@@ -40,10 +40,30 @@ const translations = {
     en: "Installing FFmpeg...",
     es: "Instalando FFmpeg...",
   },
-  "deps.python.hint": {
-    "pt-BR": "Instale via python.org ou gerenciador de pacotes (ex: sudo apt install python3)",
-    en: "Install via python.org or package manager (e.g.: sudo apt install python3)",
-    es: "Instala via python.org o gestor de paquetes (ej: sudo apt install python3)",
+  "deps.python.hint.windows": {
+    "pt-BR": "Clique em instalar para baixar o Python 3.12 via winget",
+    en: "Click install to download Python 3.12 via winget",
+    es: "Haz clic en instalar para descargar Python 3.12 via winget",
+  },
+  "deps.python.hint.macos": {
+    "pt-BR": "Instale via python.org ou `brew install python3`",
+    en: "Install via python.org or `brew install python3`",
+    es: "Instala via python.org o `brew install python3`",
+  },
+  "deps.python.hint.linux": {
+    "pt-BR": "Instale via gerenciador de pacotes (ex: sudo apt install python3)",
+    en: "Install via package manager (e.g.: sudo apt install python3)",
+    es: "Instala via gestor de paquetes (ej: sudo apt install python3)",
+  },
+  "deps.python.install": {
+    "pt-BR": "Instalar Python",
+    en: "Install Python",
+    es: "Instalar Python",
+  },
+  "deps.python.installing": {
+    "pt-BR": "Instalando Python...",
+    en: "Installing Python...",
+    es: "Instalando Python...",
   },
   "deps.whisper.hint": {
     "pt-BR": "Módulo Python para transcrição de áudio",
@@ -275,6 +295,68 @@ const translations = {
     "pt-BR": "Instale todas as dependências para continuar",
     en: "Install all dependencies to continue",
     es: "Instala todas las dependencias para continuar",
+  },
+
+  // Updates
+  "updates.title": {
+    "pt-BR": "Atualizações",
+    en: "Updates",
+    es: "Actualizaciones",
+  },
+  "updates.current": {
+    "pt-BR": "Versão atual",
+    en: "Current version",
+    es: "Versión actual",
+  },
+  "updates.latest": {
+    "pt-BR": "Última versão",
+    en: "Latest version",
+    es: "Última versión",
+  },
+  "updates.upToDate": {
+    "pt-BR": "Você está na versão mais recente",
+    en: "You are on the latest version",
+    es: "Estás en la versión más reciente",
+  },
+  "updates.available": {
+    "pt-BR": "Nova versão disponível",
+    en: "New version available",
+    es: "Nueva versión disponible",
+  },
+  "updates.check": {
+    "pt-BR": "Verificar atualizações",
+    en: "Check for updates",
+    es: "Buscar actualizaciones",
+  },
+  "updates.checking": {
+    "pt-BR": "Verificando...",
+    en: "Checking...",
+    es: "Buscando...",
+  },
+  "updates.install": {
+    "pt-BR": "Atualizar agora",
+    en: "Update now",
+    es: "Actualizar ahora",
+  },
+  "updates.downloading": {
+    "pt-BR": "Baixando...",
+    en: "Downloading...",
+    es: "Descargando...",
+  },
+  "updates.installing": {
+    "pt-BR": "Instalando...",
+    en: "Installing...",
+    es: "Instalando...",
+  },
+  "updates.error": {
+    "pt-BR": "Falha ao verificar/atualizar",
+    en: "Failed to check/update",
+    es: "Error al buscar/actualizar",
+  },
+  "updates.restartHint": {
+    "pt-BR": "O app será reiniciado após a atualização",
+    en: "The app will restart after updating",
+    es: "La app se reiniciará después de actualizar",
   },
 
   // History

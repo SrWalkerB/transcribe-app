@@ -1,6 +1,6 @@
 [package]
 name = "transcribe-app"
-version = "0.1.7"
+version = "0.1.8"
 description = "Transcribe offline, transform video in text"
 authors = ["SrWalkerB"]
 edition = "2021"
@@ -21,6 +21,8 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = "0.4"

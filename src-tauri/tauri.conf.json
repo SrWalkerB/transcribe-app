@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Transcribe App",
-  "version": "0.1.2",
+  "version": "0.1.8",
   "identifier": "com.srwalkerb.transcribe-app",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -35,5 +35,16 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDkzMTA5MjQyQ0RBNDZFNUEKUldSYWJxVE5RcElRa3cyTGNtTkpzRG9WRUhoaFo0WkNveHVsbnRlL2ZyNlBSb01nOGhlYUExWksK",
+      "endpoints": [
+        "https://github.com/SrWalkerB/Transcribe-APP/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

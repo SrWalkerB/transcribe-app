@@ -87,7 +87,7 @@ export default function DependencyCheck({ deps, onRecheck }: DependencyCheckProp
           <div className="deps-info">
             <span className="deps-name">Python 3</span>
             {!deps.python && (
-              <span className="deps-hint">{t("deps.python.hint")}</span>
+              <span className="deps-hint">{t("deps.python.hint.linux")}</span>
             )}
           </div>
         </div>

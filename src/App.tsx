@@ -39,6 +39,36 @@ function App() {
   const liveTextRef = useRef<HTMLDivElement>(null);
   const startTimestampRef = useRef<number | null>(null);
   const timerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isTranscribingRef = useRef(false);
+  const previousStateRef = useRef<AppState>("idle");
+  type PendingResult =
+    | { kind: "done"; fileName: string; text: string; model: string; isPartial: boolean }
+    | { kind: "error"; message: string }
+    | { kind: "idle" };
+  const pendingResultRef = useRef<PendingResult | null>(null);
+  const stateRef = useRef<AppState>(state);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  const stopTimer = useCallback(() => {
+    if (timerIntervalRef.current) {
+      clearInterval(timerIntervalRef.current);
+      timerIntervalRef.current = null;
+    }
+    startTimestampRef.current = null;
+  }, []);
+
+  const startTimer = useCallback(() => {
+    stopTimer();
+    setElapsedMs(0);
+    startTimestampRef.current = Date.now();
+    timerIntervalRef.current = setInterval(() => {
+      if (startTimestampRef.current != null) {
+        setElapsedMs(Date.now() - startTimestampRef.current);
+      }
+    }, 250);
+  }, [stopTimer]);
 
   const setLang = useCallback((newLang: Lang) => {
     setLangState(newLang);
@@ -79,27 +109,10 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (state !== "loading") return;
-
-    // Inicia o contador quando o usuário inicia a transcrição.
-    setElapsedMs(0);
-    startTimestampRef.current = Date.now();
-
-    timerIntervalRef.current = setInterval(() => {
-      if (startTimestampRef.current != null) {
-        setElapsedMs(Date.now() - startTimestampRef.current);
-      }
-    }, 250);
-
     return () => {
-      if (timerIntervalRef.current) {
-        clearInterval(timerIntervalRef.current);
-      }
-      timerIntervalRef.current = null;
-      startTimestampRef.current = null;
-      setElapsedMs(0);
+      stopTimer();
     };
-  }, [state]);
+  }, [stopTimer]);
 
   useEffect(() => {
     if (liveTextRef.current) {
@@ -155,7 +168,49 @@ function App() {
 
   function handleSettingsContinue() {
     setIsFirstRun(false);
-    setState("idle");
+
+    const pending = pendingResultRef.current;
+    pendingResultRef.current = null;
+
+    if (pending) {
+      if (pending.kind === "done") {
+        setTranscription(pending.text);
+        setIsPartial(pending.isPartial);
+        setStep(null);
+        setState("done");
+        saveToHistory({
+          fileName: pending.fileName,
+          text: pending.text,
+          model: pending.model,
+          isPartial: pending.isPartial,
+        });
+        return;
+      }
+      if (pending.kind === "error") {
+        setError(pending.message);
+        setStep(null);
+        setState("error");
+        return;
+      }
+      if (pending.kind === "idle") {
+        setState("idle");
+        setStep(null);
+        return;
+      }
+    }
+
+    if (isTranscribingRef.current) {
+      setState("loading");
+      return;
+    }
+
+    const prev = previousStateRef.current;
+    setState(prev === "settings" ? "idle" : prev);
+  }
+
+  function handleOpenSettings() {
+    previousStateRef.current = stateRef.current;
+    setState("settings");
   }
 
   async function handlePathSelected(path: string, model: string, threads: number) {
@@ -168,6 +223,17 @@ function App() {
     setLiveText("");
     setDetectedLang("");
     setIsPartial(false);
+    pendingResultRef.current = null;
+    isTranscribingRef.current = true;
+    startTimer();
+
+    const applyDone = (text: string, partial: boolean) => {
+      setTranscription(text);
+      setIsPartial(partial);
+      setStep(null);
+      setState("done");
+      saveToHistory({ fileName, text, model, isPartial: partial });
+    };
 
     try {
       const result = await invoke<string>("transcribe_video", {
@@ -175,27 +241,52 @@ function App() {
         model,
         threads,
       });
-      setTranscription(result);
-      setState("done");
-      setStep(null);
-      saveToHistory({ fileName, text: result, model, isPartial: false });
+      isTranscribingRef.current = false;
+      stopTimer();
+      if (stateRef.current === "settings") {
+        pendingResultRef.current = {
+          kind: "done",
+          fileName,
+          text: result,
+          model,
+          isPartial: false,
+        };
+      } else {
+        applyDone(result, false);
+      }
     } catch (err) {
+      isTranscribingRef.current = false;
+      stopTimer();
       const errStr = err instanceof Error ? err.message : String(err);
+      const inSettings = stateRef.current === "settings";
+
       if (errStr.startsWith("__CANCELLED__")) {
         const partialText = errStr.slice("__CANCELLED__".length);
         if (partialText.trim()) {
-          setTranscription(partialText);
-          setIsPartial(true);
-          setState("done");
-          saveToHistory({ fileName, text: partialText, model, isPartial: true });
+          if (inSettings) {
+            pendingResultRef.current = {
+              kind: "done",
+              fileName,
+              text: partialText,
+              model,
+              isPartial: true,
+            };
+          } else {
+            applyDone(partialText, true);
+          }
+        } else if (inSettings) {
+          pendingResultRef.current = { kind: "idle" };
         } else {
           setState("idle");
+          setStep(null);
         }
+      } else if (inSettings) {
+        pendingResultRef.current = { kind: "error", message: errStr };
       } else {
         setError(errStr);
         setState("error");
+        setStep(null);
       }
-      setStep(null);
     }
   }
 
@@ -253,7 +344,7 @@ function App() {
           <button
             type="button"
             className="settings-fab"
-            onClick={() => setState("settings")}
+            onClick={handleOpenSettings}
             title={t("settings.title")}
           >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
