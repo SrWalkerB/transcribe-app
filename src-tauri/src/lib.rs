@@ -404,6 +404,7 @@ fn resolve_command_any(names: &[&str]) -> String {
 /// the system Python's ability to find/install packages.
 fn python_command(python_bin: &str) -> Command {
     let mut cmd = Command::new(python_bin);
+    suppress_console(&mut cmd);
     cmd.env("PYTHONIOENCODING", "utf-8");
     cmd.env("HF_HUB_DISABLE_SYMLINKS_WARNING", "1");
     if is_appimage() {
@@ -461,7 +462,9 @@ async fn check_dependencies(app: tauri::AppHandle) -> DependencyStatus {
 
     tokio::task::spawn_blocking(move || {
         let ffmpeg_bin = resolve_command("ffmpeg");
-        let ffmpeg = Command::new(&ffmpeg_bin)
+        let mut ffmpeg_cmd = Command::new(&ffmpeg_bin);
+        suppress_console(&mut ffmpeg_cmd);
+        let ffmpeg = ffmpeg_cmd
             .arg("-version")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -606,7 +609,9 @@ fn install_dependencies_blocking(python_bin: &str) -> Result<String, String> {
     }
 
     // Strategy 3: pipx install (if pipx is available)
-    let pipx_result = Command::new("pipx")
+    let mut pipx_cmd = Command::new("pipx");
+    suppress_console(&mut pipx_cmd);
+    let pipx_result = pipx_cmd
         .arg("install")
         .arg("faster-whisper")
         .output();
@@ -820,7 +825,9 @@ fn install_ffmpeg_blocking(
 #[tauri::command]
 fn get_video_duration(path: String) -> Result<f64, String> {
     let ffprobe_bin = resolve_command("ffprobe");
-    let output = Command::new(&ffprobe_bin)
+    let mut ffprobe_cmd = Command::new(&ffprobe_bin);
+    suppress_console(&mut ffprobe_cmd);
+    let output = ffprobe_cmd
         .arg("-v")
         .arg("quiet")
         .arg("-show_entries")
