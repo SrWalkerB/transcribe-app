@@ -10,6 +10,24 @@ use serde::Serialize;
 use tauri::path::BaseDirectory;
 use tauri::{Emitter, Manager};
 
+#[derive(Clone, Serialize)]
+struct InstallProgress {
+    target: String,
+    step: String,
+    progress: f32,
+}
+
+fn emit_progress(app: &tauri::AppHandle, target: &str, step: &str, progress: f32) {
+    let _ = app.emit(
+        "install-progress",
+        InstallProgress {
+            target: target.to_string(),
+            step: step.to_string(),
+            progress,
+        },
+    );
+}
+
 #[cfg(windows)]
 fn suppress_console(cmd: &mut Command) {
     // Evita a janela de terminal "aparecer/fechar" ao executar binários de CLI no Windows.
@@ -108,7 +126,7 @@ fn download_uv_windows() -> Result<String, String> {
     let uv_dir = local_uv_dir().ok_or_else(|| "Pasta de dados indisponível".to_string())?;
     let uv_dir_str = uv_dir.to_string_lossy().replace('\'', "''");
     let ps_script = format!(
-        "$ErrorActionPreference='Stop'; \
+        "$ProgressPreference='SilentlyContinue'; $ErrorActionPreference='Stop'; \
          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; \
          $url = 'https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip'; \
          $tmp = Join-Path $env:TEMP ('uv-dl-' + [guid]::NewGuid() + '.zip'); \
@@ -147,7 +165,8 @@ fn ensure_uv_windows() -> Result<String, String> {
 
 /// Create a self-contained Python 3.12 venv via uv, auto-downloading Python if needed.
 #[cfg(windows)]
-fn install_python_via_uv() -> Result<String, String> {
+fn install_python_via_uv(app: &tauri::AppHandle) -> Result<String, String> {
+    emit_progress(app, "python", "Baixando gerenciador uv...", 0.1);
     let uv = ensure_uv_windows()?;
     let runtime = local_runtime_dir().ok_or_else(|| "Pasta de runtime indisponível".to_string())?;
     let python_install = local_python_install_dir().ok_or_else(|| "Pasta de Python indisponível".to_string())?;
@@ -157,9 +176,7 @@ fn install_python_via_uv() -> Result<String, String> {
     }
     let _ = std::fs::create_dir_all(&python_install);
 
-    // uv venv --python 3.12 --seed <runtime>
-    // UV_PYTHON_INSTALL_DIR: força uv a baixar Python dentro da pasta do app
-    // UV_PYTHON_PREFERENCE=only-managed: ignora Python do sistema, usa só o gerenciado pelo uv
+    emit_progress(app, "python", "Baixando Python 3.12 portátil...", 0.3);
     let runtime_str = runtime.to_string_lossy().to_string();
     let mut cmd = Command::new(&uv);
     suppress_console(&mut cmd);
@@ -180,6 +197,7 @@ fn install_python_via_uv() -> Result<String, String> {
         ));
     }
 
+    emit_progress(app, "python", "Finalizando...", 0.9);
     local_runtime_python().ok_or_else(|| {
         "Venv criada mas python.exe não foi encontrado em runtime\\Scripts".to_string()
     })
@@ -190,7 +208,7 @@ fn install_python_via_uv() -> Result<String, String> {
 #[cfg(windows)]
 fn python_from_registry() -> Option<String> {
     let ps_script = r#"
-        $ErrorActionPreference='SilentlyContinue';
+        $ProgressPreference='SilentlyContinue'; $ErrorActionPreference='SilentlyContinue';
         $roots = @(
             'HKCU:\Software\Python\PythonCore',
             'HKLM:\Software\Python\PythonCore',
@@ -494,9 +512,14 @@ async fn install_dependencies(app: tauri::AppHandle) -> Result<String, String> {
         .ok();
     let python_bin = resolve_python(script_path.as_deref());
 
-    tokio::task::spawn_blocking(move || install_dependencies_blocking(&python_bin))
+    emit_progress(&app, "whisper", "Instalando faster-whisper...", -1.0);
+    let result = tokio::task::spawn_blocking(move || install_dependencies_blocking(&python_bin))
         .await
-        .map_err(|e| format!("Erro interno: {}", e))?
+        .map_err(|e| format!("Erro interno: {}", e))?;
+    if result.is_ok() {
+        emit_progress(&app, "whisper", "Concluído!", 1.0);
+    }
+    result
 }
 
 fn install_dependencies_blocking(python_bin: &str) -> Result<String, String> {
@@ -611,8 +634,8 @@ fn get_platform() -> &'static str {
 }
 
 #[tauri::command]
-async fn install_python() -> Result<String, String> {
-    tokio::task::spawn_blocking(install_python_blocking)
+async fn install_python(app: tauri::AppHandle) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || install_python_blocking(&app))
         .await
         .map_err(|e| format!("Erro interno: {}", e))?
 }
@@ -633,17 +656,14 @@ fn detect_python_windows() -> Option<String> {
 }
 
 #[cfg(windows)]
-fn install_python_blocking() -> Result<String, String> {
-    // Caminho único e confiável: baixar uv e criar um runtime portátil do app.
-    // Não dependemos de winget, instalador oficial, Microsoft Store ou PATH do usuário.
-    // Se o usuário já tem Python instalado e funcionando, `resolve_command_any` vai
-    // achar via registro/py launcher/where, então `check_dependencies` já retornaria ok
-    // sem nem cair aqui. Este caminho serve para quem NÃO tem Python.
-    match install_python_via_uv() {
-        Ok(path) => Ok(format!(
-            "Python portátil instalado em {}. Clique em Verificar novamente.",
-            path
-        )),
+fn install_python_blocking(app: &tauri::AppHandle) -> Result<String, String> {
+    emit_progress(app, "python", "Verificando instalações existentes...", -1.0);
+    if let Some(path) = detect_python_windows() {
+        return Ok(format!("Python já instalado em {}.", path));
+    }
+
+    match install_python_via_uv(app) {
+        Ok(path) => Ok(format!("Python portátil instalado em {}.", path)),
         Err(e) => Err(format!(
             "Falha ao preparar o Python portátil via uv.\n\n{}\n\nSe o problema persistir, baixe o Python manualmente em https://www.python.org/downloads/ marcando 'Add python.exe to PATH'.",
             e
@@ -652,12 +672,11 @@ fn install_python_blocking() -> Result<String, String> {
 }
 
 #[cfg(not(windows))]
-fn install_python_blocking() -> Result<String, String> {
+fn install_python_blocking(_app: &tauri::AppHandle) -> Result<String, String> {
     Err("Instalação automática do Python só é suportada no Windows.".into())
 }
 
 #[tauri::command]
-#[allow(unused_variables)]
 async fn install_ffmpeg(app: tauri::AppHandle) -> Result<String, String> {
     let install_dir = local_ffmpeg_bin_dir()
         .ok_or_else(|| "Não foi possível localizar a pasta de dados do app".to_string())?;
@@ -669,7 +688,8 @@ async fn install_ffmpeg(app: tauri::AppHandle) -> Result<String, String> {
     #[cfg(windows)]
     {
         let dir = install_dir.clone();
-        return tokio::task::spawn_blocking(move || install_ffmpeg_windows_native(&dir))
+        let a = app.clone();
+        return tokio::task::spawn_blocking(move || install_ffmpeg_windows_native(&a, &dir))
             .await
             .map_err(|e| format!("Erro interno: {}", e))?;
     }
@@ -690,6 +710,7 @@ async fn install_ffmpeg(app: tauri::AppHandle) -> Result<String, String> {
             .ok_or_else(|| "Path do script inválido (encoding)".to_string())?
             .to_string();
 
+        emit_progress(&app, "ffmpeg", "Instalando FFmpeg...", -1.0);
         return tokio::task::spawn_blocking(move || {
             install_ffmpeg_blocking(&python_bin, &script_path, &install_dir)
         })
@@ -699,41 +720,59 @@ async fn install_ffmpeg(app: tauri::AppHandle) -> Result<String, String> {
 }
 
 #[cfg(windows)]
-fn install_ffmpeg_windows_native(install_dir: &str) -> Result<String, String> {
+fn run_ps(script: &str) -> Result<String, String> {
+    let mut cmd = Command::new("powershell");
+    suppress_console(&mut cmd);
+    let out = cmd
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script])
+        .output()
+        .map_err(|e| format!("Falha ao executar PowerShell: {}", e))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        Err(stderr.lines().take(8).collect::<Vec<_>>().join("\n"))
+    }
+}
+
+#[cfg(windows)]
+fn install_ffmpeg_windows_native(app: &tauri::AppHandle, install_dir: &str) -> Result<String, String> {
     let url = "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip";
     let escaped_dir = install_dir.replace('\'', "''");
-    let ps_script = format!(
-        "$ErrorActionPreference='Stop'; \
-         $tmp = Join-Path $env:TEMP ('ffmpeg-' + [guid]::NewGuid() + '.zip'); \
-         $dst = Join-Path $env:TEMP ('ffmpeg-extract-' + [guid]::NewGuid()); \
+
+    // Stage 1: Download
+    emit_progress(app, "ffmpeg", "Baixando FFmpeg (~80 MB)...", 0.1);
+    let tmp_var = format!(
+        "$ProgressPreference='SilentlyContinue'; $ErrorActionPreference='Stop'; \
          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; \
+         $tmp = Join-Path $env:TEMP ('ffmpeg-' + [guid]::NewGuid() + '.zip'); \
          Invoke-WebRequest -Uri '{url}' -OutFile $tmp -UseBasicParsing; \
-         Expand-Archive -Path $tmp -DestinationPath $dst -Force; \
+         Write-Output $tmp",
+        url = url
+    );
+    let zip_path = run_ps(&tmp_var)
+        .map(|s| s.trim().to_string())
+        .map_err(|e| format!("Falha ao baixar FFmpeg:\n{}", e))?;
+
+    // Stage 2: Extract
+    emit_progress(app, "ffmpeg", "Extraindo arquivos...", 0.6);
+    let extract_script = format!(
+        "$ProgressPreference='SilentlyContinue'; $ErrorActionPreference='Stop'; \
+         $dst = Join-Path $env:TEMP ('ffmpeg-extract-' + [guid]::NewGuid()); \
+         Expand-Archive -Path '{zip}' -DestinationPath $dst -Force; \
          $bins = Get-ChildItem -Path $dst -Recurse -Include ffmpeg.exe,ffprobe.exe; \
          if ($bins.Count -eq 0) {{ throw 'Binários ffmpeg/ffprobe não encontrados no zip' }}; \
          New-Item -ItemType Directory -Force -Path '{dir}' | Out-Null; \
          foreach ($b in $bins) {{ Copy-Item $b.FullName -Destination '{dir}' -Force }}; \
-         Remove-Item $tmp,$dst -Recurse -Force -ErrorAction SilentlyContinue",
-        url = url,
+         Remove-Item '{zip}',$dst -Recurse -Force -ErrorAction SilentlyContinue",
+        zip = zip_path.replace('\'', "''"),
         dir = escaped_dir
     );
+    run_ps(&extract_script).map_err(|e| format!("Falha ao extrair FFmpeg:\n{}", e))?;
 
-    let mut cmd = Command::new("powershell");
-    suppress_console(&mut cmd);
-    let output = cmd
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &ps_script])
-        .output()
-        .map_err(|e| format!("Falha ao executar PowerShell: {}", e))?;
-
-    if output.status.success() {
-        return Ok("FFmpeg instalado com sucesso!".to_string());
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    Err(format!(
-        "Falha ao baixar/instalar FFmpeg.\n\nDetalhe:\n{}",
-        stderr.lines().take(8).collect::<Vec<_>>().join("\n")
-    ))
+    // Stage 3: Done
+    emit_progress(app, "ffmpeg", "Concluído!", 1.0);
+    Ok("FFmpeg instalado com sucesso!".to_string())
 }
 
 #[cfg(not(windows))]

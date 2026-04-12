@@ -1,10 +1,17 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { LANGUAGES } from "../i18n";
 import { useLang } from "../LangContext";
+
+interface InstallProgress {
+  target: string;
+  step: string;
+  progress: number;
+}
 
 type UpdateStatus =
   | "idle"
@@ -44,6 +51,23 @@ export default function SettingsPage({ onContinue, isFirstRun }: SettingsPagePro
   const [downloadedBytes, setDownloadedBytes] = useState(0);
   const [totalBytes, setTotalBytes] = useState(0);
   const [updateError, setUpdateError] = useState("");
+  const [installProgress, setInstallProgress] = useState<Record<string, InstallProgress>>({});
+
+  const updateProgress = useCallback((p: InstallProgress) => {
+    setInstallProgress((prev) => ({ ...prev, [p.target]: p }));
+  }, []);
+
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    listen<InstallProgress>("install-progress", (event) => {
+      updateProgress(event.payload);
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, [updateProgress]);
 
   useEffect(() => {
     checkDeps();
@@ -117,14 +141,16 @@ export default function SettingsPage({ onContinue, isFirstRun }: SettingsPagePro
     setInstallingTarget("whisper");
     setInstallMsg("");
     setInstallError("");
+    setInstallProgress((prev) => { const n = { ...prev }; delete n.whisper; return n; });
     try {
       const result = await invoke<string>("install_dependencies");
       setInstallMsg(result);
-      setTimeout(() => checkDeps(), 1500);
+      await checkDeps();
     } catch (err) {
       setInstallError(err instanceof Error ? err.message : String(err));
     } finally {
       setInstallingTarget(null);
+      setInstallProgress((prev) => { const n = { ...prev }; delete n.whisper; return n; });
     }
   }
 
@@ -132,14 +158,16 @@ export default function SettingsPage({ onContinue, isFirstRun }: SettingsPagePro
     setInstallingTarget("ffmpeg");
     setInstallMsg("");
     setInstallError("");
+    setInstallProgress((prev) => { const n = { ...prev }; delete n.ffmpeg; return n; });
     try {
       const result = await invoke<string>("install_ffmpeg");
       setInstallMsg(result);
-      setTimeout(() => checkDeps(), 1500);
+      await checkDeps();
     } catch (err) {
       setInstallError(err instanceof Error ? err.message : String(err));
     } finally {
       setInstallingTarget(null);
+      setInstallProgress((prev) => { const n = { ...prev }; delete n.ffmpeg; return n; });
     }
   }
 
@@ -147,14 +175,16 @@ export default function SettingsPage({ onContinue, isFirstRun }: SettingsPagePro
     setInstallingTarget("python");
     setInstallMsg("");
     setInstallError("");
+    setInstallProgress((prev) => { const n = { ...prev }; delete n.python; return n; });
     try {
       const result = await invoke<string>("install_python");
       setInstallMsg(result);
-      setTimeout(() => checkDeps(), 1500);
+      await checkDeps();
     } catch (err) {
       setInstallError(err instanceof Error ? err.message : String(err));
     } finally {
       setInstallingTarget(null);
+      setInstallProgress((prev) => { const n = { ...prev }; delete n.python; return n; });
     }
   }
 
@@ -231,6 +261,7 @@ export default function SettingsPage({ onContinue, isFirstRun }: SettingsPagePro
               hint={!deps.ffmpeg ? t("deps.ffmpeg.hint") : undefined}
               canInstall={!deps.ffmpeg && (deps.python || platform === "windows")}
               installing={installingTarget === "ffmpeg"}
+              progress={installProgress.ffmpeg}
               onInstall={handleInstallFfmpeg}
               installLabel={installingTarget === "ffmpeg" ? t("deps.ffmpeg.installing") : t("deps.ffmpeg.install")}
             />
@@ -240,6 +271,7 @@ export default function SettingsPage({ onContinue, isFirstRun }: SettingsPagePro
               hint={!deps.python ? t(`deps.python.hint.${platform}`) : undefined}
               canInstall={!deps.python && platform === "windows"}
               installing={installingTarget === "python"}
+              progress={installProgress.python}
               onInstall={handleInstallPython}
               installLabel={installingTarget === "python" ? t("deps.python.installing") : t("deps.python.install")}
             />
@@ -255,6 +287,7 @@ export default function SettingsPage({ onContinue, isFirstRun }: SettingsPagePro
               }
               canInstall={!deps.faster_whisper && deps.python}
               installing={installingTarget === "whisper"}
+              progress={installProgress.whisper}
               onInstall={handleInstallFasterWhisper}
               installLabel={installingTarget === "whisper" ? t("deps.installing") : t("deps.install")}
             />
@@ -374,6 +407,7 @@ function DepItem({
   hint,
   canInstall,
   installing,
+  progress,
   onInstall,
   installLabel,
 }: {
@@ -382,13 +416,19 @@ function DepItem({
   hint?: string;
   canInstall?: boolean;
   installing?: boolean;
+  progress?: InstallProgress;
   onInstall?: () => void;
   installLabel?: string;
 }) {
+  const isIndeterminate = progress && progress.progress < 0;
+  const progressPct = progress && progress.progress >= 0 ? Math.round(progress.progress * 100) : 0;
+
   return (
-    <div className={`settings-dep ${ok ? "settings-dep--ok" : "settings-dep--missing"}`}>
+    <div className={`settings-dep ${ok ? "settings-dep--ok" : "settings-dep--missing"} ${installing ? "settings-dep--installing" : ""}`}>
       <div className="settings-dep__status">
-        {ok ? (
+        {installing ? (
+          <span className="spinner spinner--small" />
+        ) : ok ? (
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="settings-dep__icon--ok">
             <polyline points="20 6 9 17 4 12" />
           </svg>
@@ -401,16 +441,26 @@ function DepItem({
       </div>
       <div className="settings-dep__info">
         <span className="settings-dep__name">{name}</span>
-        {hint && <span className="settings-dep__hint">{hint}</span>}
+        {installing && progress ? (
+          <>
+            <span className="settings-dep__step">{progress.step}</span>
+            <div className="settings-dep__progress-track">
+              <div
+                className={`settings-dep__progress-bar ${isIndeterminate ? "settings-dep__progress-bar--indeterminate" : ""}`}
+                style={isIndeterminate ? undefined : { width: `${progressPct}%` }}
+              />
+            </div>
+          </>
+        ) : (
+          hint && <span className="settings-dep__hint">{hint}</span>
+        )}
       </div>
-      {canInstall && onInstall && (
+      {!installing && canInstall && onInstall && (
         <button
           type="button"
           className="settings-dep__install"
           onClick={onInstall}
-          disabled={installing}
         >
-          {installing && <span className="spinner spinner--small" />}
           {installLabel}
         </button>
       )}
