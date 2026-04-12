@@ -404,6 +404,8 @@ fn resolve_command_any(names: &[&str]) -> String {
 /// the system Python's ability to find/install packages.
 fn python_command(python_bin: &str) -> Command {
     let mut cmd = Command::new(python_bin);
+    cmd.env("PYTHONIOENCODING", "utf-8");
+    cmd.env("HF_HUB_DISABLE_SYMLINKS_WARNING", "1");
     if is_appimage() {
         cmd.env_remove("PYTHONHOME");
         cmd.env_remove("PYTHONPATH");
