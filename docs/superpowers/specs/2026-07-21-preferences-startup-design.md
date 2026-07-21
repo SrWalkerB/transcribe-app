@@ -57,7 +57,7 @@ pois não implicam necessariamente que o ambiente esteja mal configurado.
 - Centralizar a avaliação de dependências por plataforma para que a decisão de
   início use o mesmo critério da tela de Configurações.
 - Manter a configuração de idioma independente, como já ocorre hoje.
-- Atualizar a versão Tauri de `0.1.18` para `0.1.19`; a tag `v0.1.19` dispara o
+- Atualizar a versão Tauri de `0.1.18` para `0.1.20`; a tag `v0.1.20` dispara o
   workflow de release para Windows e Linux.
 
 ## Testes e validação

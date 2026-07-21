@@ -210,7 +210,7 @@ git commit -m "feat: open directly after setup"
 
 - [ ] **Step 1: Atualizar versão**
 
-Trocar `"version": "0.1.18"` por `"version": "0.1.19"`.
+Trocar `"version": "0.1.18"` por `"version": "0.1.20"`.
 
 - [ ] **Step 2: Rodar validação completa**
 
@@ -228,16 +228,16 @@ Expected: sem erro de whitespace e apenas mudanças desta feature e da branch at
 
 ```bash
 git add src-tauri/tauri.conf.json docs/superpowers/specs/2026-07-21-preferences-startup-design.md
-git commit -m "chore: release v0.1.19"
+git commit -m "chore: release v0.1.20"
 git switch main
 git merge --no-ff feat/windows-amd-gpu-whispercpp
 git push origin main
-git tag v0.1.19
-git push origin v0.1.19
+git tag v0.1.20
+git push origin v0.1.20
 ```
 
 - [ ] **Step 5: Acompanhar publicação**
 
 Run: `gh run list --workflow release.yml --limit 1` e `gh run watch <run-id> --exit-status`
 
-Expected: jobs Windows e Linux com sucesso e release `v0.1.19` publicada.
+Expected: jobs Windows e Linux com sucesso e release `v0.1.20` publicada.
