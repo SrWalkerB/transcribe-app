@@ -95,6 +95,46 @@ const translations = {
     en: "Checking dependencies...",
     es: "Verificando dependencias...",
   },
+  "deps.whispercli.name": {
+    "pt-BR": "Motor de GPU (whisper.cpp)",
+    en: "GPU engine (whisper.cpp)",
+    es: "Motor de GPU (whisper.cpp)",
+  },
+  "deps.whispercli.hint": {
+    "pt-BR": "Acelera a transcrição usando a GPU (AMD/Vulkan) ou a CPU",
+    en: "Speeds up transcription using the GPU (AMD/Vulkan) or CPU",
+    es: "Acelera la transcripcion usando la GPU (AMD/Vulkan) o la CPU",
+  },
+  "deps.whispercli.install": {
+    "pt-BR": "Instalar motor de GPU",
+    en: "Install GPU engine",
+    es: "Instalar motor de GPU",
+  },
+  "deps.whispercli.installing": {
+    "pt-BR": "Instalando...",
+    en: "Installing...",
+    es: "Instalando...",
+  },
+  "deps.model.name": {
+    "pt-BR": "Modelo de transcrição (Base)",
+    en: "Transcription model (Base)",
+    es: "Modelo de transcripcion (Base)",
+  },
+  "deps.model.hint": {
+    "pt-BR": "Modelo base (~148 MB). Outros modelos são baixados ao selecioná-los.",
+    en: "Base model (~148 MB). Other models are downloaded when selected.",
+    es: "Modelo base (~148 MB). Otros modelos se descargan al seleccionarlos.",
+  },
+  "deps.model.install": {
+    "pt-BR": "Baixar modelo",
+    en: "Download model",
+    es: "Descargar modelo",
+  },
+  "deps.model.installing": {
+    "pt-BR": "Baixando...",
+    en: "Downloading...",
+    es: "Descargando...",
+  },
 
   // Uploader
   "upload.dragOrBrowse": {
@@ -141,6 +181,46 @@ const translations = {
     "pt-BR": "Transcrevendo...",
     en: "Transcribing...",
     es: "Transcribiendo...",
+  },
+  "upload.deviceLabel": {
+    "pt-BR": "Dispositivo de processamento",
+    en: "Processing device",
+    es: "Dispositivo de procesamiento",
+  },
+  "upload.deviceHint": {
+    "pt-BR": "Automático usa a GPU quando disponível, com a CPU como reserva.",
+    en: "Automatic uses the GPU when available, falling back to the CPU.",
+    es: "Automático usa la GPU cuando está disponible, con la CPU como respaldo.",
+  },
+  "upload.device.auto": {
+    "pt-BR": "Automático",
+    en: "Automatic",
+    es: "Automático",
+  },
+  "upload.device.gpu": {
+    "pt-BR": "GPU (AMD)",
+    en: "GPU (AMD)",
+    es: "GPU (AMD)",
+  },
+  "upload.device.cpu": {
+    "pt-BR": "CPU",
+    en: "CPU",
+    es: "CPU",
+  },
+  "upload.modelDownloadHint": {
+    "pt-BR": "O modelo selecionado será baixado antes de transcrever",
+    en: "The selected model will be downloaded before transcribing",
+    es: "El modelo seleccionado se descargará antes de transcribir",
+  },
+  "upload.downloadingModel": {
+    "pt-BR": "Baixando modelo...",
+    en: "Downloading model...",
+    es: "Descargando modelo...",
+  },
+  "upload.downloadAndTranscribe": {
+    "pt-BR": "Baixar modelo e transcrever",
+    en: "Download model and transcribe",
+    es: "Descargar modelo y transcribir",
   },
   "upload.removeFile": {
     "pt-BR": "Remover arquivo",

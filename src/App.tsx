@@ -8,9 +8,15 @@ import TranscriptionHistory, { saveToHistory, type HistoryEntry } from "./compon
 import SettingsPage from "./components/SettingsPage";
 import { t as translate, type Lang } from "./i18n";
 import { LangContext } from "./LangContext";
+import {
+  decideStartupState,
+  SETUP_COMPLETE_KEY,
+  type DependencyStatus,
+  type Platform,
+} from "./startup";
 import "./App.css";
 
-type AppState = "settings" | "idle" | "loading" | "done" | "error" | "history";
+type AppState = "checking" | "settings" | "idle" | "loading" | "done" | "error" | "history";
 type TranscribeStep = "audio" | "text" | null;
 
 interface ProgressPayload {
@@ -20,7 +26,7 @@ interface ProgressPayload {
 }
 
 function App() {
-  const [state, setState] = useState<AppState>("settings");
+  const [state, setState] = useState<AppState>("checking");
   const [isFirstRun, setIsFirstRun] = useState(true);
   const [step, setStep] = useState<TranscribeStep>(null);
   const [transcription, setTranscription] = useState("");
@@ -84,6 +90,36 @@ function App() {
     () => ({ lang, setLang, t }),
     [lang, setLang, t]
   );
+
+  useEffect(() => {
+    let active = true;
+
+    Promise.all([
+      invoke<Platform>("get_platform"),
+      invoke<DependencyStatus>("check_dependencies"),
+    ])
+      .then(([platform, dependencies]) => {
+        if (!active) return;
+        const setupComplete =
+          localStorage.getItem(SETUP_COMPLETE_KEY) === "true";
+        const initialState = decideStartupState(
+          setupComplete,
+          platform,
+          dependencies,
+        );
+        setIsFirstRun(initialState === "settings");
+        setState(initialState);
+      })
+      .catch(() => {
+        if (!active) return;
+        setIsFirstRun(true);
+        setState("settings");
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     const unlistenStep = listen<string>("transcribe-step", (event) => {
@@ -166,7 +202,10 @@ function App() {
     return () => { unlisten.then((fn) => fn()); };
   }, [state]);
 
-  function handleSettingsContinue() {
+  function handleSettingsContinue(setupCompleted: boolean) {
+    if (setupCompleted) {
+      localStorage.setItem(SETUP_COMPLETE_KEY, "true");
+    }
     setIsFirstRun(false);
 
     const pending = pendingResultRef.current;
@@ -213,7 +252,7 @@ function App() {
     setState("settings");
   }
 
-  async function handlePathSelected(path: string, model: string, threads: number) {
+  async function handlePathSelected(path: string, model: string, threads: number, device: string) {
     const fileName = path.replace(/^.*[/\\]/, "") || "video";
     setState("loading");
     setStep(null);
@@ -240,6 +279,7 @@ function App() {
         path,
         model,
         threads,
+        device,
       });
       isTranscribingRef.current = false;
       stopTimer();
@@ -340,7 +380,7 @@ function App() {
   return (
     <LangContext.Provider value={langContextValue}>
       <main className="app">
-        {state !== "settings" && (
+        {state !== "settings" && state !== "checking" && (
           <button
             type="button"
             className="settings-fab"
@@ -367,6 +407,12 @@ function App() {
 
 
         <section className="app-content">
+          {state === "checking" && (
+            <div className="settings-page__checking">
+              <span className="spinner" />
+            </div>
+          )}
+
           {state === "settings" && (
             <SettingsPage onContinue={handleSettingsContinue} isFirstRun={isFirstRun} />
           )}

@@ -48,6 +48,57 @@ fn local_ffmpeg_bin_dir() -> Option<PathBuf> {
     dirs::data_local_dir().map(|base| base.join("transcribe-app").join("ffmpeg").join("bin"))
 }
 
+/// Local folder used to store the downloaded whisper.cpp (Vulkan) binary + DLLs.
+fn local_whisper_dir() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|base| base.join("transcribe-app").join("whisper"))
+}
+
+/// Path to the downloaded `whisper-cli.exe`, if present.
+fn local_whisper_cli_exe() -> Option<String> {
+    let exe = local_whisper_dir()?.join("whisper-cli.exe");
+    if exe.is_file() {
+        Some(exe.to_string_lossy().to_string())
+    } else {
+        None
+    }
+}
+
+/// Local folder used to store downloaded GGML/whisper.cpp models.
+fn local_models_dir() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|base| base.join("transcribe-app").join("models"))
+}
+
+/// Maps a UI model name (tiny/base/.../turbo) to the corresponding GGML filename.
+fn ggml_model_filename(model: &str) -> &'static str {
+    match model {
+        "tiny" => "ggml-tiny.bin",
+        "base" => "ggml-base.bin",
+        "small" => "ggml-small.bin",
+        "medium" => "ggml-medium.bin",
+        "large" => "ggml-large-v3.bin",
+        "turbo" => "ggml-large-v3-turbo.bin",
+        _ => "ggml-base.bin",
+    }
+}
+
+/// Absolute path to a model file inside the local models dir (may not exist yet).
+fn local_model_path(model: &str) -> Option<PathBuf> {
+    local_models_dir().map(|d| d.join(ggml_model_filename(model)))
+}
+
+/// Whether the GGML file for the given UI model name is already downloaded.
+fn local_model_exists(model: &str) -> bool {
+    local_model_path(model)
+        .map(|p| p.is_file())
+        .unwrap_or(false)
+}
+
+/// Nome do arquivo do modelo VAD (Silero) usado pelo whisper.cpp para detectar
+/// fala e pular trechos de silêncio — evita a alucinação do Whisper (repetir
+/// "Thank you." etc.) em vídeos com longos trechos sem voz.
+#[cfg(windows)]
+const VAD_MODEL_FILENAME: &str = "ggml-silero-v5.1.2.bin";
+
 /// App-managed uv binary directory (Windows only).
 #[cfg(windows)]
 fn local_uv_dir() -> Option<PathBuf> {
@@ -440,8 +491,24 @@ fn resolve_python(script_path: Option<&Path>) -> String {
 #[derive(Serialize)]
 struct DependencyStatus {
     ffmpeg: bool,
+    // mac/Linux (faster-whisper):
     python: bool,
     faster_whisper: bool,
+    // Windows (whisper.cpp):
+    whisper_cli: bool,
+    model: bool,
+}
+
+/// Há pelo menos um modelo GGML (`*.bin`) baixado na pasta de modelos? (Windows)
+#[cfg(windows)]
+fn any_model_present() -> bool {
+    local_models_dir()
+        .and_then(|d| fs::read_dir(d).ok())
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .any(|e| e.path().extension().map(|x| x == "bin").unwrap_or(false))
+        })
+        .unwrap_or(false)
 }
 
 /// Shared state: holds the running Python child process + cancellation flag.
@@ -472,33 +539,50 @@ async fn check_dependencies(app: tauri::AppHandle) -> DependencyStatus {
             .map(|s| s.success())
             .unwrap_or(false);
 
-        let python_bin = resolve_python(script_path.as_deref());
+        // Windows usa whisper.cpp (sem Python). mac/Linux usam faster-whisper.
+        #[cfg(windows)]
+        {
+            let _ = &script_path;
+            DependencyStatus {
+                ffmpeg,
+                python: false,
+                faster_whisper: false,
+                whisper_cli: local_whisper_cli_exe().is_some(),
+                model: any_model_present(),
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let python_bin = resolve_python(script_path.as_deref());
 
-        let python = python_command(&python_bin)
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-
-        let faster_whisper = if python {
-            python_command(&python_bin)
-                .arg("-c")
-                .arg("import faster_whisper")
+            let python = python_command(&python_bin)
+                .arg("--version")
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status()
                 .map(|s| s.success())
-                .unwrap_or(false)
-        } else {
-            false
-        };
+                .unwrap_or(false);
 
-        DependencyStatus {
-            ffmpeg,
-            python,
-            faster_whisper,
+            let faster_whisper = if python {
+                python_command(&python_bin)
+                    .arg("-c")
+                    .arg("import faster_whisper")
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+
+            DependencyStatus {
+                ffmpeg,
+                python,
+                faster_whisper,
+                whisper_cli: false,
+                model: false,
+            }
         }
     })
     .await
@@ -506,7 +590,15 @@ async fn check_dependencies(app: tauri::AppHandle) -> DependencyStatus {
         ffmpeg: false,
         python: false,
         faster_whisper: false,
+        whisper_cli: false,
+        model: false,
     })
+}
+
+/// Verifica se o arquivo GGML do modelo selecionado já está baixado (usado no Windows).
+#[tauri::command]
+fn is_model_downloaded(model: String) -> bool {
+    local_model_exists(&model)
 }
 
 #[tauri::command]
@@ -822,6 +914,159 @@ fn install_ffmpeg_blocking(
     ))
 }
 
+/// Download + extract the whisper.cpp (Vulkan) binary published in the app's releases.
+#[cfg(windows)]
+fn install_whisper_cli_windows(app: &tauri::AppHandle, install_dir: &str) -> Result<String, String> {
+    // Binário compilado pelo workflow .github/workflows/whisper-cli-vulkan.yml (tag fixa `whisper-vulkan`).
+    let url = "https://github.com/SrWalkerB/transcribe-app/releases/download/whisper-vulkan/whisper-cli-vulkan-win-x64.zip";
+    let escaped_dir = install_dir.replace('\'', "''");
+
+    // Stage 1: Download
+    emit_progress(app, "whispercli", "Baixando whisper.cpp (GPU)...", 0.1);
+    let dl = format!(
+        "$ProgressPreference='SilentlyContinue'; $ErrorActionPreference='Stop'; \
+         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; \
+         $tmp = Join-Path $env:TEMP ('whispercli-' + [guid]::NewGuid() + '.zip'); \
+         Invoke-WebRequest -Uri '{url}' -OutFile $tmp -UseBasicParsing; \
+         Write-Output $tmp",
+        url = url
+    );
+    let zip_path = run_ps(&dl).map(|s| s.trim().to_string()).map_err(|e| {
+        if e.contains("Not Found") || e.contains("404") {
+            "O motor de GPU ainda não foi publicado nas releases deste app \
+(tag `whisper-vulkan`). Rode o workflow \"Build whisper-cli (Vulkan)\" no GitHub \
+Actions uma vez para publicá-lo, ou instale o binário manualmente."
+                .to_string()
+        } else {
+            format!("Falha ao baixar whisper.cpp:\n{}", e)
+        }
+    })?;
+
+    // Stage 2: Extract — copia whisper-cli.exe + todas as DLLs (incl. ggml-vulkan) para o install_dir.
+    emit_progress(app, "whispercli", "Extraindo arquivos...", 0.6);
+    let extract = format!(
+        "$ProgressPreference='SilentlyContinue'; $ErrorActionPreference='Stop'; \
+         $dst = Join-Path $env:TEMP ('whispercli-extract-' + [guid]::NewGuid()); \
+         Expand-Archive -Path '{zip}' -DestinationPath $dst -Force; \
+         $cli = Get-ChildItem -Path $dst -Recurse -Include whisper-cli.exe | Select-Object -First 1; \
+         if (-not $cli) {{ throw 'whisper-cli.exe não encontrado no zip' }}; \
+         $src = $cli.Directory.FullName; \
+         New-Item -ItemType Directory -Force -Path '{dir}' | Out-Null; \
+         Get-ChildItem -Path $src -File | Where-Object {{ $_.Extension -in '.exe','.dll' }} | ForEach-Object {{ Copy-Item $_.FullName -Destination '{dir}' -Force }}; \
+         Remove-Item '{zip}',$dst -Recurse -Force -ErrorAction SilentlyContinue",
+        zip = zip_path.replace('\'', "''"),
+        dir = escaped_dir
+    );
+    run_ps(&extract).map_err(|e| format!("Falha ao extrair whisper.cpp:\n{}", e))?;
+
+    emit_progress(app, "whispercli", "Concluído!", 1.0);
+    Ok("whisper.cpp (GPU) instalado com sucesso!".to_string())
+}
+
+/// Download a GGML model file from HuggingFace into the local models dir (idempotente).
+#[cfg(windows)]
+fn download_model_windows(app: &tauri::AppHandle, model: &str) -> Result<String, String> {
+    let filename = ggml_model_filename(model);
+    let models_dir = local_models_dir().ok_or_else(|| "Pasta de dados indisponível".to_string())?;
+    let dest = models_dir.join(filename);
+    if dest.is_file() {
+        return Ok("Modelo já está instalado.".to_string());
+    }
+
+    let url = format!(
+        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{}",
+        filename
+    );
+    let dir_str = models_dir.to_string_lossy().replace('\'', "''");
+    let dest_str = dest.to_string_lossy().replace('\'', "''");
+
+    emit_progress(app, "model", &format!("Baixando modelo {}...", model), -1.0);
+    let script = format!(
+        "$ProgressPreference='SilentlyContinue'; $ErrorActionPreference='Stop'; \
+         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; \
+         New-Item -ItemType Directory -Force -Path '{dir}' | Out-Null; \
+         $tmp = '{dest}.part'; \
+         Invoke-WebRequest -Uri '{url}' -OutFile $tmp -UseBasicParsing; \
+         Move-Item -Force $tmp '{dest}'",
+        dir = dir_str,
+        dest = dest_str,
+        url = url
+    );
+    run_ps(&script).map_err(|e| format!("Falha ao baixar modelo:\n{}", e))?;
+
+    emit_progress(app, "model", "Concluído!", 1.0);
+    Ok(format!("Modelo {} instalado com sucesso!", model))
+}
+
+/// Garante que o modelo VAD (Silero) está baixado e retorna seu path. Idempotente.
+/// Baixado sob demanda na primeira transcrição com GPU; ~2 MB.
+#[cfg(windows)]
+fn ensure_vad_model_windows(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let models_dir = local_models_dir().ok_or_else(|| "Pasta de dados indisponível".to_string())?;
+    let dest = models_dir.join(VAD_MODEL_FILENAME);
+    if dest.is_file() {
+        return Ok(dest);
+    }
+
+    let url = format!(
+        "https://huggingface.co/ggml-org/whisper-vad/resolve/main/{}",
+        VAD_MODEL_FILENAME
+    );
+    let dir_str = models_dir.to_string_lossy().replace('\'', "''");
+    let dest_str = dest.to_string_lossy().replace('\'', "''");
+
+    emit_progress(app, "vad", "Baixando detector de voz (VAD)...", -1.0);
+    let script = format!(
+        "$ProgressPreference='SilentlyContinue'; $ErrorActionPreference='Stop'; \
+         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; \
+         New-Item -ItemType Directory -Force -Path '{dir}' | Out-Null; \
+         $tmp = '{dest}.part'; \
+         Invoke-WebRequest -Uri '{url}' -OutFile $tmp -UseBasicParsing; \
+         Move-Item -Force $tmp '{dest}'",
+        dir = dir_str,
+        dest = dest_str,
+        url = url
+    );
+    run_ps(&script).map_err(|e| format!("Falha ao baixar modelo VAD:\n{}", e))?;
+    Ok(dest)
+}
+
+#[tauri::command]
+async fn install_whisper_cli(app: tauri::AppHandle) -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        let install_dir = local_whisper_dir()
+            .ok_or_else(|| "Não foi possível localizar a pasta de dados do app".to_string())?
+            .to_string_lossy()
+            .to_string();
+        let a = app.clone();
+        return tokio::task::spawn_blocking(move || install_whisper_cli_windows(&a, &install_dir))
+            .await
+            .map_err(|e| format!("Erro interno: {}", e))?;
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Err("whisper.cpp (GPU) é suportado apenas no Windows neste app.".to_string())
+    }
+}
+
+#[tauri::command]
+async fn download_model(app: tauri::AppHandle, model: String) -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        let a = app.clone();
+        return tokio::task::spawn_blocking(move || download_model_windows(&a, &model))
+            .await
+            .map_err(|e| format!("Erro interno: {}", e))?;
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, model);
+        Err("Download de modelo whisper.cpp é usado apenas no Windows.".to_string())
+    }
+}
+
 #[tauri::command]
 fn get_video_duration(path: String) -> Result<f64, String> {
     let ffprobe_bin = resolve_command("ffprobe");
@@ -855,6 +1100,7 @@ async fn transcribe_video(
     path: String,
     model: String,
     threads: u32,
+    device: Option<String>,
     process_state: tauri::State<'_, TranscribeProcess>,
 ) -> Result<String, String> {
     {
@@ -864,12 +1110,35 @@ async fn transcribe_video(
     }
 
     let ps = process_state.0.clone();
+    let device = device.unwrap_or_else(|| "auto".to_string());
 
     tokio::task::spawn_blocking(move || {
-        transcribe_video_blocking(&app, &path, &model, threads, &ps)
+        transcribe_video_blocking(&app, &path, &model, threads, &device, &ps)
     })
     .await
     .map_err(|e| format!("Erro interno: {}", e))?
+}
+
+/// Dispatcher: escolhe o motor de transcrição por plataforma.
+/// Windows -> whisper.cpp (Vulkan/CPU, sem Python). mac/Linux -> faster-whisper (Python).
+fn transcribe_video_blocking(
+    app: &tauri::AppHandle,
+    path: &str,
+    model: &str,
+    threads: u32,
+    device: &str,
+    process_state: &Mutex<TranscribeState>,
+) -> Result<String, String> {
+    if !Path::new(path).exists() {
+        return Err(format!("Arquivo não encontrado: {}", path));
+    }
+
+    if cfg!(windows) {
+        transcribe_via_whispercpp(app, path, model, threads, device, process_state)
+    } else {
+        let _ = device;
+        transcribe_via_python(app, path, model, threads, process_state)
+    }
 }
 
 #[tauri::command]
@@ -888,7 +1157,7 @@ fn get_cpu_count() -> u32 {
         .unwrap_or(4)
 }
 
-fn transcribe_video_blocking(
+fn transcribe_via_python(
     app: &tauri::AppHandle,
     path: &str,
     model: &str,
@@ -1138,6 +1407,289 @@ Detalhe (stderr):\n{}{}",
     Ok(String::from_utf8_lossy(&raw).into_owned())
 }
 
+/// Remove o prefixo UNC `\\?\` de paths Windows (whisper-cli não lida bem com ele).
+fn path_arg(p: &Path) -> String {
+    let s = p.to_string_lossy().to_string();
+    s.strip_prefix(r"\\?\").map(|x| x.to_string()).unwrap_or(s)
+}
+
+/// Converte um timestamp `HH:MM:SS.mmm` (ou `MM:SS.mmm`) em segundos.
+fn parse_timestamp(ts: &str) -> Option<f64> {
+    let mut parts: Vec<&str> = ts.trim().split(':').collect();
+    let sec_part = parts.pop()?;
+    let mut total: f64 = sec_part.parse().ok()?;
+    if let Some(m) = parts.pop() {
+        total += m.parse::<f64>().ok()? * 60.0;
+    }
+    if let Some(h) = parts.pop() {
+        total += h.parse::<f64>().ok()? * 3600.0;
+    }
+    Some(total)
+}
+
+/// Parseia uma linha de segmento do whisper-cli:
+/// `[00:00:00.000 --> 00:00:04.000]  texto` -> (segundo_inicial, segundo_final, texto)
+fn parse_whispercpp_segment(line: &str) -> Option<(f64, f64, String)> {
+    let line = line.trim_start();
+    if !line.starts_with('[') {
+        return None;
+    }
+    let close = line.find(']')?;
+    let times = &line[1..close];
+    let text = line[close + 1..].trim().to_string();
+    let mut parts = times.split("-->");
+    let start = parse_timestamp(parts.next()?)?;
+    let end = parse_timestamp(parts.next()?)?;
+    Some((start, end, text))
+}
+
+/// Formata segundos como `HH:MM:SS` (minutagem para o resultado).
+fn fmt_hms(seconds: f64) -> String {
+    let total = seconds.max(0.0) as u64;
+    format!("{:02}:{:02}:{:02}", total / 3600, (total % 3600) / 60, total % 60)
+}
+
+/// Motor de transcrição via whisper.cpp (`whisper-cli.exe`), usado no Windows.
+/// Suporta GPU AMD/Vulkan (default) ou CPU (`device = "cpu"` -> flag `-ng`).
+fn transcribe_via_whispercpp(
+    app: &tauri::AppHandle,
+    path: &str,
+    model: &str,
+    threads: u32,
+    device: &str,
+    process_state: &Mutex<TranscribeState>,
+) -> Result<String, String> {
+    let video_path = Path::new(path);
+    let video_filename = video_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("video");
+    let timestamp = Local::now().timestamp();
+    let base_name = format!("{}_{}", timestamp, video_filename);
+
+    let temp_dir = std::env::temp_dir().join("transcribe-app");
+    let output_text_dir = temp_dir.join("output-text");
+    fs::create_dir_all(&output_text_dir)
+        .map_err(|e| format!("Falha ao criar diretório temporário: {}", e))?;
+
+    let wav_path = temp_dir.join(format!("{}.wav", base_name));
+
+    // Passo 1: ffmpeg vídeo -> WAV 16kHz mono PCM (formato exigido pelo whisper.cpp)
+    let _ = app.emit("transcribe-step", "audio");
+    let ffmpeg_bin = resolve_command("ffmpeg");
+    let mut ffmpeg_cmd = Command::new(&ffmpeg_bin);
+    suppress_console(&mut ffmpeg_cmd);
+    let ffmpeg_out = ffmpeg_cmd
+        .arg("-i")
+        .arg(path)
+        .arg("-ar")
+        .arg("16000")
+        .arg("-ac")
+        .arg("1")
+        .arg("-c:a")
+        .arg("pcm_s16le")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-hide_banner")
+        .arg("-y")
+        .arg(&wav_path)
+        .output()
+        .map_err(|e| format!("Falha ao executar ffmpeg (está instalado?): {}", e))?;
+
+    if !ffmpeg_out.status.success() {
+        let stderr = String::from_utf8_lossy(&ffmpeg_out.stderr);
+        return Err(format!(
+            "Não foi possível converter o vídeo em áudio. Verifique se o ffmpeg está instalado.\n\nDetalhe: {}",
+            stderr.lines().take(3).collect::<Vec<_>>().join(" ")
+        ));
+    }
+
+    // Resolve binário whisper-cli e arquivo do modelo (ambos baixados sob demanda).
+    let whisper_bin = local_whisper_cli_exe().ok_or_else(|| {
+        "O motor de GPU (whisper.cpp) não está instalado. Vá em Configurações e instale-o."
+            .to_string()
+    })?;
+    let model_path = local_model_path(model)
+        .filter(|p| p.is_file())
+        .ok_or_else(|| {
+            format!(
+                "O modelo '{}' ainda não foi baixado. Vá em Configurações e baixe o modelo.",
+                model
+            )
+        })?;
+
+    let wav_str = path_arg(&wav_path);
+    let model_str = path_arg(&model_path);
+
+    // Modelo VAD (Silero): detecta fala e faz o whisper.cpp pular trechos de
+    // silêncio/música, eliminando a alucinação (repetir "Thank you." etc.) em
+    // vídeos sem voz contínua. Baixado sob demanda; se indisponível (ex.: sem
+    // internet), seguimos sem VAD em vez de falhar a transcrição.
+    let vad_model: Option<String> = {
+        #[cfg(windows)]
+        {
+            match ensure_vad_model_windows(app) {
+                Ok(p) => Some(path_arg(&p)),
+                Err(e) => {
+                    eprintln!("VAD indisponível, transcrevendo sem ele: {}", e);
+                    None
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
+    };
+
+    // Passo 2: whisper-cli (streaming via stdout)
+    let _ = app.emit("transcribe-step", "text");
+    let mut cli_cmd = Command::new(&whisper_bin);
+    suppress_console(&mut cli_cmd);
+    cli_cmd
+        .arg("-m")
+        .arg(&model_str)
+        .arg("-f")
+        .arg(&wav_str)
+        .arg("-l")
+        .arg("auto")
+        .arg("-t")
+        .arg(threads.to_string())
+        // `-mc 0`: não carrega o texto anterior como contexto. Evita o loop de
+        // repetição do whisper (uma frase repetida se auto-alimenta via contexto).
+        .arg("-mc")
+        .arg("0");
+    if let Some(ref vad) = vad_model {
+        cli_cmd.arg("--vad").arg("--vad-model").arg(vad);
+    }
+    if device == "cpu" {
+        cli_cmd.arg("-ng"); // força CPU (sem GPU)
+    }
+
+    let mut child = cli_cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Falha ao executar whisper-cli: {}", e))?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("Falha ao capturar stdout do whisper-cli")?;
+    let stderr_pipe = child.stderr.take();
+
+    {
+        let mut guard = process_state.lock().unwrap();
+        guard.child = Some(child);
+    }
+
+    // stderr: contém "auto-detected language: xx" + eventuais erros. Drena e emite o idioma.
+    let app_for_lang = app.clone();
+    let stderr_handle = std::thread::spawn(move || {
+        let mut lines: VecDeque<String> = VecDeque::new();
+        const MAX_LINES: usize = 250;
+        const MARK: &str = "auto-detected language:";
+
+        if let Some(stderr) = stderr_pipe {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines() {
+                let l = match line {
+                    Ok(s) => s,
+                    Err(_) => break,
+                };
+                if let Some(idx) = l.find(MARK) {
+                    if let Some(code) = l[idx + MARK.len()..].split_whitespace().next() {
+                        let _ = app_for_lang.emit("transcribe-lang", code.to_string());
+                    }
+                }
+                lines.push_back(l);
+                while lines.len() > MAX_LINES {
+                    lines.pop_front();
+                }
+            }
+        }
+        lines.into_iter().collect::<Vec<_>>().join("\n")
+    });
+
+    // Duração total para calcular o progresso (whisper-cli não informa a duração).
+    let duration = get_video_duration(path.to_string()).unwrap_or(0.0);
+
+    let reader = BufReader::new(stdout);
+    let mut full_text = String::new();
+
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break, // pipe fechado (processo morto)
+        };
+        if let Some((start, end, text)) = parse_whispercpp_segment(&line) {
+            if text.is_empty() {
+                continue;
+            }
+            let progress = if duration > 0.0 {
+                ((end / duration) * 100.0).min(100.0)
+            } else {
+                0.0
+            };
+            // Linha com minutagem (HH:MM:SS) para preview e resultado.
+            let line_fmt = format!("[{}] {}", fmt_hms(start), text);
+            if !full_text.is_empty() {
+                full_text.push('\n');
+            }
+            full_text.push_str(&line_fmt);
+            let _ = app.emit(
+                "transcribe-progress",
+                serde_json::json!({
+                    "progress": progress,
+                    "text": line_fmt,
+                    "full_text": full_text,
+                }),
+            );
+        }
+    }
+
+    // Espera o processo e classifica o resultado.
+    let mut guard = process_state.lock().unwrap();
+    let cancel_requested = guard.cancel_requested;
+    let status_success = if let Some(ref mut child) = guard.child {
+        match child.wait() {
+            Ok(s) => s.success(),
+            Err(_) => false,
+        }
+    } else {
+        false
+    };
+    guard.child = None;
+    guard.cancel_requested = false;
+    drop(guard);
+
+    let stderr_output = stderr_handle.join().unwrap_or_default();
+
+    if !status_success {
+        if cancel_requested {
+            if !full_text.trim().is_empty() {
+                return Err(format!("__CANCELLED__{}", full_text));
+            }
+            return Err("__CANCELLED__".to_string());
+        }
+        let partial_hint = if full_text.trim().is_empty() {
+            "".to_string()
+        } else {
+            format!("\n\nTrecho transcrito (parcial):\n{}", full_text)
+        };
+        return Err(format!(
+            "Falha ao transcrever o vídeo.\n\nDetalhe (stderr):\n{}{}",
+            stderr_output.trim(),
+            partial_hint
+        ));
+    }
+
+    // Resultado já vem montado do stdout (com minutagem). Grava o .txt para histórico.
+    let txt_path = output_text_dir.join(format!("{}.txt", base_name));
+    let _ = fs::write(&txt_path, &full_text);
+    Ok(full_text)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1155,6 +1707,9 @@ pub fn run() {
             install_dependencies,
             install_ffmpeg,
             install_python,
+            install_whisper_cli,
+            download_model,
+            is_model_downloaded,
             get_platform,
             get_cpu_count,
             get_video_duration,

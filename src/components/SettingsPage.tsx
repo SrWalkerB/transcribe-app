@@ -6,6 +6,11 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { LANGUAGES } from "../i18n";
 import { useLang } from "../LangContext";
+import {
+  dependenciesReady,
+  type DependencyStatus,
+  type Platform,
+} from "../startup";
 
 interface InstallProgress {
   target: string;
@@ -22,26 +27,34 @@ type UpdateStatus =
   | "installing"
   | "error";
 
-interface DependencyStatus {
-  ffmpeg: boolean;
-  python: boolean;
-  faster_whisper: boolean;
-}
+// Modelo padrão baixado pela tela de configurações no Windows.
+const DEFAULT_MODEL = "base";
 
 interface SettingsPageProps {
-  onContinue: () => void;
+  onContinue: (setupCompleted: boolean) => void;
   isFirstRun: boolean;
 }
-
-type Platform = "windows" | "macos" | "linux";
 
 export default function SettingsPage({ onContinue, isFirstRun }: SettingsPageProps) {
   const { lang, setLang, t } = useLang();
   const [deps, setDeps] = useState<DependencyStatus | null>(null);
   const [checking, setChecking] = useState(true);
-  const [installingTarget, setInstallingTarget] = useState<
-    "ffmpeg" | "whisper" | "python" | null
-  >(null);
+  // Conjunto de alvos em instalação — permite baixar vários ao mesmo tempo.
+  const [installing, setInstalling] = useState<Set<string>>(() => new Set());
+  const isInstalling = useCallback((k: string) => installing.has(k), [installing]);
+  const startInstall = useCallback(
+    (k: string) => setInstalling((p) => new Set(p).add(k)),
+    []
+  );
+  const endInstall = useCallback(
+    (k: string) =>
+      setInstalling((p) => {
+        const n = new Set(p);
+        n.delete(k);
+        return n;
+      }),
+    []
+  );
   const [installMsg, setInstallMsg] = useState("");
   const [installError, setInstallError] = useState("");
   const [platform, setPlatform] = useState<Platform>("linux");
@@ -138,8 +151,7 @@ export default function SettingsPage({ onContinue, isFirstRun }: SettingsPagePro
   }
 
   async function handleInstallFasterWhisper() {
-    setInstallingTarget("whisper");
-    setInstallMsg("");
+    startInstall("whisper");
     setInstallError("");
     setInstallProgress((prev) => { const n = { ...prev }; delete n.whisper; return n; });
     try {
@@ -149,14 +161,13 @@ export default function SettingsPage({ onContinue, isFirstRun }: SettingsPagePro
     } catch (err) {
       setInstallError(err instanceof Error ? err.message : String(err));
     } finally {
-      setInstallingTarget(null);
+      endInstall("whisper");
       setInstallProgress((prev) => { const n = { ...prev }; delete n.whisper; return n; });
     }
   }
 
   async function handleInstallFfmpeg() {
-    setInstallingTarget("ffmpeg");
-    setInstallMsg("");
+    startInstall("ffmpeg");
     setInstallError("");
     setInstallProgress((prev) => { const n = { ...prev }; delete n.ffmpeg; return n; });
     try {
@@ -166,14 +177,13 @@ export default function SettingsPage({ onContinue, isFirstRun }: SettingsPagePro
     } catch (err) {
       setInstallError(err instanceof Error ? err.message : String(err));
     } finally {
-      setInstallingTarget(null);
+      endInstall("ffmpeg");
       setInstallProgress((prev) => { const n = { ...prev }; delete n.ffmpeg; return n; });
     }
   }
 
   async function handleInstallPython() {
-    setInstallingTarget("python");
-    setInstallMsg("");
+    startInstall("python");
     setInstallError("");
     setInstallProgress((prev) => { const n = { ...prev }; delete n.python; return n; });
     try {
@@ -183,17 +193,49 @@ export default function SettingsPage({ onContinue, isFirstRun }: SettingsPagePro
     } catch (err) {
       setInstallError(err instanceof Error ? err.message : String(err));
     } finally {
-      setInstallingTarget(null);
+      endInstall("python");
       setInstallProgress((prev) => { const n = { ...prev }; delete n.python; return n; });
     }
   }
 
-  const allOk = deps?.ffmpeg && deps?.python && deps?.faster_whisper;
+  async function handleInstallWhisperCli() {
+    startInstall("whispercli");
+    setInstallError("");
+    setInstallProgress((prev) => { const n = { ...prev }; delete n.whispercli; return n; });
+    try {
+      const result = await invoke<string>("install_whisper_cli");
+      setInstallMsg(result);
+    } catch (err) {
+      setInstallError(err instanceof Error ? err.message : String(err));
+    } finally {
+      endInstall("whispercli");
+      setInstallProgress((prev) => { const n = { ...prev }; delete n.whispercli; return n; });
+      await checkDeps();
+    }
+  }
+
+  async function handleDownloadModel() {
+    startInstall("model");
+    setInstallError("");
+    setInstallProgress((prev) => { const n = { ...prev }; delete n.model; return n; });
+    try {
+      const result = await invoke<string>("download_model", { model: DEFAULT_MODEL });
+      setInstallMsg(result);
+    } catch (err) {
+      setInstallError(err instanceof Error ? err.message : String(err));
+    } finally {
+      endInstall("model");
+      setInstallProgress((prev) => { const n = { ...prev }; delete n.model; return n; });
+      await checkDeps();
+    }
+  }
+
+  const allOk = dependenciesReady(platform, deps);
 
   return (
     <div className="settings-page">
       {!isFirstRun && (
-        <button type="button" className="settings-page__back" onClick={onContinue}>
+        <button type="button" className="settings-page__back" onClick={() => onContinue(false)}>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="15 18 9 12 15 6" />
           </svg>
@@ -260,37 +302,64 @@ export default function SettingsPage({ onContinue, isFirstRun }: SettingsPagePro
               ok={deps.ffmpeg}
               hint={!deps.ffmpeg ? t("deps.ffmpeg.hint") : undefined}
               canInstall={!deps.ffmpeg && (deps.python || platform === "windows")}
-              installing={installingTarget === "ffmpeg"}
+              installing={isInstalling("ffmpeg")}
               progress={installProgress.ffmpeg}
               onInstall={handleInstallFfmpeg}
-              installLabel={installingTarget === "ffmpeg" ? t("deps.ffmpeg.installing") : t("deps.ffmpeg.install")}
+              installLabel={isInstalling("ffmpeg") ? t("deps.ffmpeg.installing") : t("deps.ffmpeg.install")}
             />
-            <DepItem
-              name="Python 3"
-              ok={deps.python}
-              hint={!deps.python ? t(`deps.python.hint.${platform}`) : undefined}
-              canInstall={!deps.python && platform === "windows"}
-              installing={installingTarget === "python"}
-              progress={installProgress.python}
-              onInstall={handleInstallPython}
-              installLabel={installingTarget === "python" ? t("deps.python.installing") : t("deps.python.install")}
-            />
-            <DepItem
-              name="faster-whisper"
-              ok={deps.faster_whisper}
-              hint={
-                !deps.faster_whisper && deps.python
-                  ? t("deps.whisper.hint")
-                  : !deps.faster_whisper && !deps.python
-                    ? t("deps.whisper.needPython")
-                    : undefined
-              }
-              canInstall={!deps.faster_whisper && deps.python}
-              installing={installingTarget === "whisper"}
-              progress={installProgress.whisper}
-              onInstall={handleInstallFasterWhisper}
-              installLabel={installingTarget === "whisper" ? t("deps.installing") : t("deps.install")}
-            />
+            {platform === "windows" ? (
+              <>
+                <DepItem
+                  name={t("deps.whispercli.name")}
+                  ok={deps.whisper_cli}
+                  hint={!deps.whisper_cli ? t("deps.whispercli.hint") : undefined}
+                  canInstall={!deps.whisper_cli}
+                  installing={isInstalling("whispercli")}
+                  progress={installProgress.whispercli}
+                  onInstall={handleInstallWhisperCli}
+                  installLabel={isInstalling("whispercli") ? t("deps.whispercli.installing") : t("deps.whispercli.install")}
+                />
+                <DepItem
+                  name={t("deps.model.name")}
+                  ok={deps.model}
+                  hint={!deps.model ? t("deps.model.hint") : undefined}
+                  canInstall={!deps.model}
+                  installing={isInstalling("model")}
+                  progress={installProgress.model}
+                  onInstall={handleDownloadModel}
+                  installLabel={isInstalling("model") ? t("deps.model.installing") : t("deps.model.install")}
+                />
+              </>
+            ) : (
+              <>
+                <DepItem
+                  name="Python 3"
+                  ok={deps.python}
+                  hint={!deps.python ? t(`deps.python.hint.${platform}`) : undefined}
+                  canInstall={false}
+                  installing={isInstalling("python")}
+                  progress={installProgress.python}
+                  onInstall={handleInstallPython}
+                  installLabel={isInstalling("python") ? t("deps.python.installing") : t("deps.python.install")}
+                />
+                <DepItem
+                  name="faster-whisper"
+                  ok={deps.faster_whisper}
+                  hint={
+                    !deps.faster_whisper && deps.python
+                      ? t("deps.whisper.hint")
+                      : !deps.faster_whisper && !deps.python
+                        ? t("deps.whisper.needPython")
+                        : undefined
+                  }
+                  canInstall={!deps.faster_whisper && deps.python}
+                  installing={isInstalling("whisper")}
+                  progress={installProgress.whisper}
+                  onInstall={handleInstallFasterWhisper}
+                  installLabel={isInstalling("whisper") ? t("deps.installing") : t("deps.install")}
+                />
+              </>
+            )}
           </div>
         ) : null}
 
@@ -388,7 +457,7 @@ export default function SettingsPage({ onContinue, isFirstRun }: SettingsPagePro
       <button
         type="button"
         className="btn-transcribe settings-page__continue"
-        onClick={onContinue}
+        onClick={() => onContinue(true)}
         disabled={!allOk}
       >
         {isFirstRun ? t("settings.start") : t("settings.save")}
