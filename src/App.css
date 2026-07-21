@@ -431,6 +431,13 @@
   background: var(--bg-secondary);
 }
 
+.device-control {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
 .threads-control {
   display: flex;
   flex-direction: column;
